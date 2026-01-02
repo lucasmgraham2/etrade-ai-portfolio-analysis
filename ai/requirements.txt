@@ -1,0 +1,7 @@
+# AI Portfolio Advisor - Requirements
+
+# Environment variable support
+python-dotenv==1.0.0
+
+# OpenAI ChatGPT
+openai>=1.0.0

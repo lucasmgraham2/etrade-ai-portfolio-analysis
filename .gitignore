@@ -14,6 +14,8 @@ ai/ai_analysis_*.txt
 ai_analysis_*.txt
 ai/analysis_reports/*
 **/analysis_reports/**
+ai/analysis_cache/*
+**/analysis_cache/**
 **/multi_agent_analysis_*.json
 **/multi_agent_report_*.txt
 **/ai_portfolio_prompt_populated.md

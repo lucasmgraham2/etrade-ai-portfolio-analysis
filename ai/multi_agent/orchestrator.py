@@ -209,12 +209,81 @@ class AgentOrchestrator:
             # Add agent-specific results
             if agent_result['status'] == 'completed':
                 results = agent_result['results']
-                if 'summary' in results:
+                if 'summary' in results and agent_name != "Integrator":
                     report_lines.append(f"\n{results['summary']}")
                 if 'recommendations' in results:
                     report_lines.append("\nRecommendations:")
                     for rec in results['recommendations']:
                         report_lines.append(f"  • {rec}")
+
+                # Provide richer detail for integrator output
+                if agent_name == "Integrator":
+                    report_lines.append("\nExecutive Summary:")
+                    report_lines.append(f"  {results.get('summary', 'No summary available')}")
+
+                    risk = results.get('risk_assessment', {})
+                    if risk:
+                        report_lines.append("\nRisk Overview:")
+                        report_lines.append(f"  Overall: {risk.get('overall_risk', 'UNKNOWN')}")
+                        report_lines.append(
+                            f"  Concentration: {risk.get('concentration_risk', 'UNKNOWN')} (largest position {risk.get('largest_position_pct', 0)}%)"
+                        )
+                        report_lines.append(
+                            f"  Sentiment: {risk.get('sentiment_risk', 'UNKNOWN')} ({risk.get('bearish_positions_pct', 0)}% bearish)"
+                        )
+                        report_lines.append(
+                            f"  Underperformance: {risk.get('underperformance_risk', 'UNKNOWN')} ({risk.get('losing_positions_pct', 0)}% losing)"
+                        )
+
+                    sector_highlights = (
+                        results.get('portfolio_recommendations', {})
+                        .get('sector_highlights', {})
+                    )
+                    if sector_highlights:
+                        report_lines.append("\nSector Outlook:")
+                        top_fav = sector_highlights.get('top_favorable', [])
+                        if top_fav:
+                            top_fav_text = ", ".join(
+                                [f"{p['sector']} (score {p['score']:.1f})" for p in top_fav]
+                            )
+                            report_lines.append(f"  Top favorable: {top_fav_text}")
+                        least_fav = sector_highlights.get('least_favorable', [])
+                        if least_fav:
+                            least_fav_text = ", ".join(
+                                [f"{p['sector']} (score {p['score']:.1f})" for p in least_fav]
+                            )
+                            report_lines.append(f"  Not favorable: {least_fav_text}")
+                        underweight = sector_highlights.get('underweight', [])
+                        if underweight:
+                            report_lines.append(
+                                f"  Underweight vs outlook: {', '.join(underweight)}"
+                            )
+                        overweight = sector_highlights.get('overweight', [])
+                        if overweight:
+                            report_lines.append(
+                                f"  Overweight in lagging sectors: {', '.join(overweight)}"
+                            )
+
+                    actions = results.get('action_priorities', [])[:5]
+                    if actions:
+                        report_lines.append("\nTop Priority Actions:")
+                        for action in actions:
+                            report_lines.append(
+                                f"  • [P{action.get('priority')}] {action.get('action')} ({action.get('rationale')})"
+                            )
+
+                    buckets = results.get('recommendation_buckets', {})
+                    if buckets:
+                        report_lines.append("\nBuy/Hold/Sell Summary:")
+                        report_lines.append(
+                            f"  Buy: {', '.join(buckets.get('buy', [])[:8]) or 'none'}"
+                        )
+                        report_lines.append(
+                            f"  Hold: {', '.join(buckets.get('hold', [])[:8]) or 'none'}"
+                        )
+                        report_lines.append(
+                            f"  Sell/Trim: {', '.join(buckets.get('sell', [])[:8]) or 'none'}"
+                        )
             else:
                 report_lines.append(f"\nErrors: {', '.join(agent_result['errors'])}")
         

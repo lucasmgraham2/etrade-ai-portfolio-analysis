@@ -486,29 +486,30 @@ class SentimentAgent(BaseAgent):
             score = data["overall_score"]
             sentiment = data["sentiment"]
             confidence = data["confidence"]
+            news_score = data.get("news_score", 0)
             
             # More lenient thresholds to give actionable recommendations
             if sentiment == "bullish":
                 if confidence > 0.5:  # Slightly higher gate to reduce noise
                     recommendations.append(
-                        f"Consider increasing position in {symbol} (positive sentiment, score: {score:.2f})"
+                        f"BUY bias for {symbol}: news sentiment bullish (score {score:.2f}, news {news_score:.2f}); consider adding/averaging up"
                     )
                 else:
                     recommendations.append(
-                        f"Hold {symbol} (weak positive sentiment, monitor)"
+                        f"Hold {symbol}: mildly positive news sentiment (score {score:.2f}), monitor for confirmation"
                     )
             elif sentiment == "bearish":
                 if confidence > 0.5:  # Slightly higher gate to reduce noise
                     recommendations.append(
-                        f"Consider reducing position in {symbol} (negative sentiment, score: {score:.2f})"
+                        f"SELL bias for {symbol}: news sentiment bearish (score {score:.2f}, news {news_score:.2f}); consider trimming"
                     )
                 else:
                     recommendations.append(
-                        f"Hold {symbol} (weak negative sentiment, monitor)"
+                        f"Hold {symbol}: slightly negative news sentiment (score {score:.2f}), monitor for deterioration"
                     )
             elif sentiment == "neutral":
                 recommendations.append(
-                    f"Hold {symbol} (neutral sentiment, monitor for changes)"
+                    f"Hold {symbol}: neutral news sentiment (score {score:.2f}), watch for catalysts"
                 )
         
         return recommendations

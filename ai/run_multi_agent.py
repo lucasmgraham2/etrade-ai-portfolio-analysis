@@ -174,7 +174,7 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
         
         # Save text report
         report_file = output_dir / f"multi_agent_report_{timestamp}.txt"
-        with open(report_file, 'w') as f:
+        with open(report_file, 'w', encoding='utf-8') as f:
             f.write(report)
         print(f"✓ Text report saved: {report_file.relative_to(Path(__file__).parent)}")
         

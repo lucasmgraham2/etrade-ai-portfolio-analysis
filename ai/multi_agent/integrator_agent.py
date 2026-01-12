@@ -74,6 +74,10 @@ class IntegratorAgent(BaseAgent):
         risk_assessment = self._assess_portfolio_risk(
             portfolio, position_analyses, macro_results
         )
+
+        # Bucket recommendations for quick view
+        recommendation_buckets = self._bucket_position_recommendations(position_analyses)
+        portfolio_recommendations["recommendation_buckets"] = recommendation_buckets
         
         # Generate executive summary
         executive_summary = self._create_executive_summary(
@@ -87,6 +91,7 @@ class IntegratorAgent(BaseAgent):
             "portfolio_recommendations": portfolio_recommendations,
             "action_priorities": action_priorities,
             "risk_assessment": risk_assessment,
+            "recommendation_buckets": recommendation_buckets,
             "recommendations": self._format_recommendations(action_priorities),
             "timestamp": datetime.now().isoformat()
         }
@@ -356,6 +361,65 @@ class IntegratorAgent(BaseAgent):
             return f"{recommendation} based on: " + ", ".join(reasons)
         else:
             return f"{recommendation} - mixed signals suggest neutral stance"
+
+    def _extract_sector_highlights(
+        self,
+        sector_predictions: List[Dict[str, Any]],
+        allocation: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Summarize sector leaders/laggards and allocation gaps."""
+
+        # Sort by strength for clear top/bottom groupings
+        outperformers = [p for p in sector_predictions if p.get("outlook") == "outperform"]
+        underperformers = [p for p in sector_predictions if p.get("outlook") == "underperform"]
+        outperformers.sort(key=lambda x: x.get("prediction_score", 0), reverse=True)
+        underperformers.sort(key=lambda x: x.get("prediction_score", 0))
+
+        top_favorable = [
+            {
+                "sector": p.get("sector", "Unknown"),
+                "score": p.get("prediction_score", 0),
+                "confidence": p.get("confidence", 0)
+            }
+            for p in outperformers[:3]
+        ]
+
+        least_favorable = [
+            {
+                "sector": p.get("sector", "Unknown"),
+                "score": p.get("prediction_score", 0),
+                "confidence": p.get("confidence", 0)
+            }
+            for p in underperformers[:3]
+        ]
+
+        return {
+            "top_favorable": top_favorable,
+            "least_favorable": least_favorable,
+            "underweight": allocation.get("underweight_sectors", []),
+            "overweight": allocation.get("overweight_sectors", [])
+        }
+
+    def _bucket_position_recommendations(
+        self, position_analyses: List[Dict[str, Any]]
+    ) -> Dict[str, List[str]]:
+        """Group symbols into buy/hold/sell buckets for clear action summary."""
+
+        buckets = {"buy": [], "hold": [], "sell": []}
+
+        for p in position_analyses:
+            rec = p.get("recommendation")
+            symbol = p.get("symbol")
+            entry = f"{symbol} ({rec})"
+
+            if rec in ["STRONG_BUY", "BUY"]:
+                buckets["buy"].append(entry)
+            elif rec in ["HOLD"]:
+                buckets["hold"].append(entry)
+            elif rec in ["SELL", "TAKE_PROFIT", "CUT_LOSS", "STRONG_SELL"]:
+                buckets["sell"].append(entry)
+
+        return buckets
     
     def _generate_portfolio_recommendations(
         self,
@@ -430,25 +494,52 @@ class IntegratorAgent(BaseAgent):
                 "rationale": "Portfolio lacks sector diversification"
             })
         
-        # Sector rotation recommendation - show ALL outperforming sectors
+        # Sector rotation recommendation with richer context
         sector_predictions = sector.get("sector_predictions", [])
-        outperforming_sectors = [p["sector"] for p in sector_predictions if p.get("outlook") == "outperform"]
-        underweight_sectors = sector.get("portfolio_allocation", {}).get("underweight_sectors", [])
-        
-        if outperforming_sectors:
+        allocation = sector.get("portfolio_allocation", {})
+        sector_highlights = self._extract_sector_highlights(sector_predictions, allocation)
+
+        top_favorable = sector_highlights.get("top_favorable", [])
+        least_favorable = sector_highlights.get("least_favorable", [])
+        underweight_sectors = sector_highlights.get("underweight", [])
+        overweight_sectors = sector_highlights.get("overweight", [])
+
+        if top_favorable:
+            formatted_top = ", ".join([
+                f"{p['sector']} (score {p['score']:.1f})" for p in top_favorable
+            ])
             recommendations.append({
                 "type": "SECTOR_OUTLOOK",
-                "action": f"Favorable sectors to watch: {', '.join(outperforming_sectors)}",
-                "priority": "HIGH" if len(outperforming_sectors) >= 3 else "MEDIUM",
-                "rationale": f"{len(outperforming_sectors)} sectors predicted to outperform based on momentum and macro conditions"
+                "action": f"Top favorable sectors: {formatted_top}",
+                "priority": "HIGH",
+                "rationale": "Top 3 sectors expected to outperform based on momentum and macro context"
             })
-        
+
+        if least_favorable:
+            formatted_bottom = ", ".join([
+                f"{p['sector']} (score {p['score']:.1f})" for p in least_favorable
+            ])
+            recommendations.append({
+                "type": "SECTOR_RISK",
+                "action": f"Not favorable sectors: {formatted_bottom}",
+                "priority": "MEDIUM",
+                "rationale": "Avoid adding exposure where signals point to underperformance"
+            })
+
         if underweight_sectors:
             recommendations.append({
                 "type": "SECTOR_ROTATION",
                 "action": f"Consider adding exposure to: {', '.join(underweight_sectors[:3])}",
                 "priority": "MEDIUM",
                 "rationale": "Sectors predicted to outperform are underrepresented"
+            })
+
+        if overweight_sectors:
+            recommendations.append({
+                "type": "SECTOR_TRIM",
+                "action": f"Trim exposure in: {', '.join(overweight_sectors[:3])}",
+                "priority": "MEDIUM",
+                "rationale": "Overweight in sectors expected to lag increases downside risk"
             })
         
         return {
@@ -465,7 +556,8 @@ class IntegratorAgent(BaseAgent):
                 "sell": sells,
                 "strong_sell": strong_sells
             },
-            "recommendations": recommendations
+            "recommendations": recommendations,
+            "sector_highlights": sector_highlights
         }
     
     def _prioritize_actions(
@@ -635,6 +727,13 @@ class IntegratorAgent(BaseAgent):
         # Get key metrics
         macro_score = macro.get("market_favorability", {}).get("score", 50)
         macro_interp = macro.get("market_favorability", {}).get("interpretation", "neutral")
+
+        sector_highlights = portfolio_recommendations.get("sector_highlights", {}) or {}
+        if not sector_highlights:
+            sector_highlights = self._extract_sector_highlights(
+                sector.get("sector_predictions", []),
+                sector.get("portfolio_allocation", {})
+            )
         
         rec_summary = portfolio_recommendations.get("recommendation_summary", {})
         strong_buys = rec_summary.get("strong_buy", 0)
@@ -643,11 +742,27 @@ class IntegratorAgent(BaseAgent):
         # Get top opportunities
         top_opportunities = [p["symbol"] for p in position_analyses[:3] if p["recommendation"] in ["STRONG_BUY", "BUY"]]
         top_concerns = [p["symbol"] for p in position_analyses if p["recommendation"] in ["STRONG_SELL", "CUT_LOSS"]][:3]
+
+        rec_buckets = portfolio_recommendations.get("recommendation_buckets") or {}
+        buys = rec_buckets.get("buy", []) if isinstance(rec_buckets, dict) else []
+        holds = rec_buckets.get("hold", []) if isinstance(rec_buckets, dict) else []
+        sells = rec_buckets.get("sell", []) if isinstance(rec_buckets, dict) else []
         
         summary_parts = [
             f"Portfolio value: ${total_value:,.2f} across {total_positions} positions.",
             f"Macro environment is {macro_interp.replace('_', ' ')} (score: {macro_score}/100).",
         ]
+
+        top_fav_sectors = sector_highlights.get("top_favorable", [])
+        least_fav_sectors = sector_highlights.get("least_favorable", [])
+
+        if top_fav_sectors:
+            top_sector_names = ", ".join([f"{p['sector']} ({p['score']:.1f})" for p in top_fav_sectors])
+            summary_parts.append(f"Top favorable sectors: {top_sector_names}.")
+
+        if least_fav_sectors:
+            low_sector_names = ", ".join([f"{p['sector']} ({p['score']:.1f})" for p in least_fav_sectors])
+            summary_parts.append(f"Not favorable sectors to limit new exposure: {low_sector_names}.")
         
         if strong_buys > 0:
             summary_parts.append(f"{strong_buys} strong buy opportunities identified: {', '.join(top_opportunities[:3])}.")
@@ -657,6 +772,14 @@ class IntegratorAgent(BaseAgent):
         
         if not strong_buys and not strong_sells:
             summary_parts.append("Portfolio is well-positioned with mostly hold recommendations.")
+
+        if buys or holds or sells:
+            summary_parts.append(
+                "Actions → "
+                f"Buy: {', '.join(buys[:5]) or 'none'}; "
+                f"Hold: {', '.join(holds[:5]) or 'none'}; "
+                f"Sell/Trim: {', '.join(sells[:5]) or 'none'}."
+            )
         
         return " ".join(summary_parts)
     
@@ -667,6 +790,9 @@ class IntegratorAgent(BaseAgent):
         
         for action in action_priorities:
             rec_text = f"[Priority {action['priority']}] {action['action']}"
+            rationale = action.get("rationale")
+            if rationale:
+                rec_text += f" — {rationale}"
             recommendations.append(rec_text)
         
         return recommendations

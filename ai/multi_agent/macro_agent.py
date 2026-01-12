@@ -537,9 +537,22 @@ class MacroAgent(BaseAgent):
         phase = environment.get("economic_phase", "unknown")
         score = favorability.get("score", 50)
         interp = favorability.get("interpretation", "neutral")
+        growth = environment.get("growth_outlook", "neutral")
+        inflation = environment.get("inflation_pressure", "unknown")
+        policy = environment.get("monetary_policy_stance", "neutral")
+        risk = environment.get("market_risk_level", "moderate")
         
+        reasons = [
+            f"economic phase: {phase.replace('_', ' ')}",
+            f"growth outlook: {growth}",
+            f"inflation pressure: {inflation}",
+            f"Fed stance: {policy}",
+            f"market risk: {risk}"
+        ]
+
         return (
-            f"Macroeconomic analysis indicates economy is in {phase.replace('_', ' ')} phase. "
-            f"Overall market favorability score is {score}/100 ({interp.replace('_', ' ')}). "
-            f"{favorability.get('recommendation', '')}"
+            f"Macroeconomic analysis: {phase.replace('_', ' ')} phase; "
+            f"market favorability {score}/100 ({interp.replace('_', ' ')}). "
+            f"Drivers: {', '.join(reasons)}. "
+            f"Guidance: {favorability.get('recommendation', '')}"
         )

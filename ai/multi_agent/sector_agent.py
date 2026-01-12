@@ -407,29 +407,39 @@ class SectorAgent(BaseAgent):
     def _generate_insights(
         self, predictions: List[Dict[str, Any]], allocation: Dict[str, Any]
     ) -> List[str]:
-        """Generate insights from sector analysis"""
+        """Generate detailed insights from sector analysis"""
         insights = []
         
-        # Top outperformers
+        # Top 3 outperformers with detailed reasoning
         top_sectors = [p for p in predictions if p["outlook"] == "outperform"][:3]
         if top_sectors:
-            sector_names = ", ".join([p["sector"] for p in top_sectors])
-            insights.append(f"Top predicted outperformers: {sector_names}")
+            insights.append("Top Outperforming Sectors:")
+            for i, p in enumerate(top_sectors, 1):
+                insights.append(
+                    f"  {i}. {p['sector']}: score {p['prediction_score']:.1f}, "
+                    f"momentum {p['momentum_score']:.1f}, trend {p['trend']}, "
+                    f"3m perf {p['performance_3m']:.1f}%"
+                )
         
-        # Underperformers
+        # Bottom 3 underperformers with detailed reasoning
         bottom_sectors = [p for p in predictions if p["outlook"] == "underperform"][:3]
         if bottom_sectors:
-            sector_names = ", ".join([p["sector"] for p in bottom_sectors])
-            insights.append(f"Predicted underperformers: {sector_names}")
+            insights.append("Sectors to Avoid or Reduce:")
+            for i, p in enumerate(bottom_sectors, 1):
+                insights.append(
+                    f"  {i}. {p['sector']}: score {p['prediction_score']:.1f}, "
+                    f"momentum {p['momentum_score']:.1f}, trend {p['trend']}, "
+                    f"3m perf {p['performance_3m']:.1f}%"
+                )
         
         # Allocation insights
         overweight = allocation.get("overweight_sectors", [])
         if overweight:
-            insights.append(f"Portfolio overweight in sectors predicted to underperform: {', '.join(overweight)}")
+            insights.append(f"Portfolio overweight in lagging sectors: {', '.join(overweight)}")
         
         underweight = allocation.get("underweight_sectors", [])
         if underweight:
-            insights.append(f"Portfolio underweight in sectors predicted to outperform: {', '.join(underweight)}")
+            insights.append(f"Portfolio underweight in outperforming sectors: {', '.join(underweight)}")
         
         return insights
     
@@ -476,18 +486,17 @@ class SectorAgent(BaseAgent):
     def _create_summary(
         self, predictions: List[Dict[str, Any]], allocation: Dict[str, Any]
     ) -> str:
-        """Create summary of sector analysis"""
+        """Create summary of sector analysis with top 3 details"""
         
         outperform_count = sum(1 for p in predictions if p["outlook"] == "outperform")
         underperform_count = sum(1 for p in predictions if p["outlook"] == "underperform")
         
-        top_sector = predictions[0]["sector"] if predictions else "Unknown"
-        top_score = predictions[0]["prediction_score"] if predictions else 0
+        top_3 = predictions[:3]
+        top_3_names = ", ".join([f"{p['sector']} ({p['prediction_score']:.1f})" for p in top_3])
         
         return (
             f"Sector analysis predicts {outperform_count} sectors to outperform and "
-            f"{underperform_count} to underperform. Top predicted sector: {top_sector} "
-            f"(score: {top_score:.1f}). Portfolio spread across "
-            f"{allocation['total_positions']} positions in "
+            f"{underperform_count} to underperform. Top 3 predicted sectors: {top_3_names}. "
+            f"Portfolio spread across {allocation['total_positions']} positions in "
             f"{len(allocation['sector_counts'])} sectors."
         )

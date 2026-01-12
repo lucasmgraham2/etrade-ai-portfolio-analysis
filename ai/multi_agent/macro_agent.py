@@ -460,33 +460,56 @@ class MacroAgent(BaseAgent):
     def _generate_insights(
         self, environment: Dict[str, Any], favorability: Dict[str, Any]
     ) -> List[str]:
-        """Generate actionable insights"""
+        """Generate detailed multi-line insights with reasoning"""
         insights = []
         
-        # Economic phase insight
+        # Economic phase with explanation
         phase = environment.get("economic_phase")
-        insights.append(f"Economy is in {phase.replace('_', ' ')} phase")
+        phase_text = phase.replace('_', ' ')
+        insights.append(f"Economic Phase: {phase_text}")
+        if phase == "expansion":
+            insights.append("  → Growth phase supports equity exposure and risk-on positioning")
+        elif phase == "slowdown":
+            insights.append("  → Slowdown ahead suggests rotating to defensive sectors")
+        elif phase == "recession":
+            insights.append("  → Recessionary conditions favor capital preservation")
         
-        # Growth insight
+        # Growth outlook with drivers
         growth = environment.get("growth_outlook")
-        insights.append(f"Growth outlook is {growth}")
+        insights.append(f"Growth Outlook: {growth}")
+        if growth == "positive":
+            insights.append("  → Multiple growth indicators aligned; favor cyclicals and growth stocks")
+        elif growth == "negative":
+            insights.append("  → Deteriorating growth signals; consider defensive positioning")
         
-        # Inflation insight
+        # Inflation analysis
         inflation = environment.get("inflation_pressure")
-        insights.append(f"Inflation pressure is {inflation}")
+        insights.append(f"Inflation Pressure: {inflation}")
+        if inflation == "low":
+            insights.append("  → Low inflation supports equity valuations and bond yields stability")
+        elif inflation == "high":
+            insights.append("  → High inflation erodes purchasing power; favor inflation hedges")
         
-        # Monetary policy insight
+        # Monetary policy stance
         policy = environment.get("monetary_policy_stance")
-        insights.append(f"Fed policy stance is {policy}")
+        insights.append(f"Fed Policy Stance: {policy}")
+        if policy in ["easing", "accommodative"]:
+            insights.append("  → Easy money conditions support asset prices and growth sectors")
+        elif policy in ["tightening", "restrictive"]:
+            insights.append("  → Tight policy pressures valuations; favor quality and dividends")
         
-        # Risk insight
+        # Market risk
         risk = environment.get("market_risk_level")
-        insights.append(f"Market risk level: {risk}")
+        insights.append(f"Market Risk Level: {risk}")
+        if risk == "high":
+            insights.append("  → Elevated volatility suggests tighter stop-losses and diversification")
         
-        # Overall favorability
+        # Overall scoring
         score = favorability.get("score")
         interp = favorability.get("interpretation")
-        insights.append(f"Market favorability: {score}/100 ({interp.replace('_', ' ')})")
+        rec = favorability.get("recommendation", "")
+        insights.append(f"Market Favorability Score: {score}/100 ({interp.replace('_', ' ')})")
+        insights.append(f"  → {rec}")
         
         return insights
     

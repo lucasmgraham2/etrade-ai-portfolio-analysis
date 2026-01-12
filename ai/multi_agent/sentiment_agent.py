@@ -36,8 +36,15 @@ except ImportError:
 
 class SentimentAgent(BaseAgent):
     """
-    Analyzes market sentiment using:
-    - News articles (Financial news APIs)
+    Analyzes market sentiment using NLP transformer models on news articles.
+    
+    Uses:
+    - DistilBERT transformer models for NLP-based sentiment analysis
+    - News articles from Alpha Vantage (pre-computed) and NewsAPI (raw articles for NLP)
+    - Keyword matching as fallback only if NLP/APIs unavailable
+    
+    Note: NewsAPI free tier has rate limits. For production use, upgrade to paid tier
+    or use alternative news APIs with higher rate limits.
     """
     
     def __init__(self, config: Dict[str, Any] = None):
@@ -154,13 +161,24 @@ class SentimentAgent(BaseAgent):
         }
     
     async def _fetch_newsapi_data(self, symbols: List[str]) -> Dict[str, Any]:
-        """Fetch news from NewsAPI and analyze sentiment"""
+        """Fetch news from NewsAPI and analyze sentiment with NLP"""
         api_key = self.api_keys.get("newsapi")
         
+        if not api_key:
+            self.log("NewsAPI key not configured, skipping NewsAPI", "WARNING")
+            return {"source": "newsapi", "symbols": {}, "timestamp": datetime.now().isoformat()}
+        
         symbol_sentiments = {}
+        rate_limit_hit = False
         async with aiohttp.ClientSession() as session:
             for symbol in symbols:
                 try:
+                    # Skip if we've already hit rate limit
+                    if rate_limit_hit:
+                        self.log(f"Skipping {symbol} due to API rate limit", "WARNING")
+                        symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                        continue
+                    
                     # Calculate date range
                     end_date = datetime.now()
                     start_date = end_date - timedelta(days=self.lookback_days)
@@ -172,28 +190,47 @@ class SentimentAgent(BaseAgent):
                         f"to={end_date.strftime('%Y-%m-%d')}&"
                         f"sortBy=relevancy&"
                         f"language=en&"
+                        f"pageSize=100&"
                         f"apiKey={api_key}"
                     )
                     
-                    async with session.get(url) as response:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             articles = data.get("articles", [])
+                            self.log(f"NewsAPI returned {len(articles)} articles for {symbol}", "DEBUG")
                             
-                            # Use AI to analyze articles if available
-                            if self.openai_client and articles:
-                                sentiment = await self._analyze_news_with_ai(articles)
-                            else:
+                            # Prioritize NLP transformer analysis
+                            if articles:
                                 sentiment = self._analyze_news_articles(articles)
+                                self.log(f"{symbol}: NLP analysis - method={sentiment.get('method')}, articles_analyzed={sentiment.get('articles_analyzed', 0)}, score={sentiment.get('score', 0):.3f}", "DEBUG")
+                                
+                                # Only use OpenAI if NLP sentiment is weak/zero (to get deeper reasoning)
+                                if sentiment.get("score", 0) == 0 and self.openai_client:
+                                    self.log(f"NLP inconclusive for {symbol}, trying OpenAI analysis", "INFO")
+                                    ai_sentiment = await self._analyze_news_with_ai(articles)
+                                    if ai_sentiment.get("score") != 0:
+                                        sentiment = ai_sentiment
+                            else:
+                                sentiment = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
                                 
                             symbol_sentiments[symbol] = sentiment
+                        elif response.status == 429:
+                            # Rate limit hit - log and skip remaining
+                            self.log(f"NewsAPI rate limit (429) for {symbol} - free tier exhausted", "WARNING")
+                            rate_limit_hit = True
+                            symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
                         else:
-                            symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0}
+                            self.log(f"NewsAPI error for {symbol}: HTTP {response.status}", "WARNING")
+                            symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
                 except Exception as e:
-                    self.log(f"Error fetching news for {symbol}: {str(e)}", "ERROR")
-                    symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0}
+                    self.log(f"Error fetching from NewsAPI for {symbol}: {str(e)}", "ERROR")
+                    symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
                     
-                await asyncio.sleep(0.5)
+                # Add delay to respect rate limits
+                await asyncio.sleep(1.0)
+        
+        self.log(f"NewsAPI analysis complete: {len([s for s in symbol_sentiments.values() if s.get('method') == 'nlp'])} symbols with NLP analysis", "INFO")
         
         return {
             "source": "newsapi",
@@ -204,57 +241,69 @@ class SentimentAgent(BaseAgent):
     def _analyze_news_articles(self, articles: List[Dict]) -> Dict[str, Any]:
         """Analyze sentiment from news articles using NLP transformers"""
         if not articles:
-            return {"score": 0, "label": "neutral", "count": 0}
+            return {"score": 0, "label": "neutral", "count": 0, "method": "none"}
 
-        # Use NLP if available, otherwise fall back to keyword matching
+        # Always use NLP if available (transformer model is more accurate than keywords)
         if NLP_AVAILABLE and sentiment_analyzer:
-            return self._analyze_with_nlp(articles)
+            self.log(f"Using NLP transformer for {len(articles)} articles", "DEBUG")
+            nlp_result = self._analyze_with_nlp(articles)
+            self.log(f"NLP analysis complete: {nlp_result.get('articles_analyzed', 0)} articles analyzed, score {nlp_result.get('score', 0):.3f}", "INFO")
+            return nlp_result
         else:
+            self.log("NLP not available, transformer model not loaded - using keyword fallback", "WARNING")
+            # Only use keywords as absolute fallback when NLP is unavailable
             return self._analyze_with_keywords(articles)
     
     def _analyze_with_nlp(self, articles: List[Dict]) -> Dict[str, Any]:
-        """Use transformer-based NLP for sentiment analysis"""
+        """Use transformer-based NLP for sentiment analysis on up to 50 articles"""
         try:
+            if not sentiment_analyzer:
+                raise RuntimeError("Sentiment analyzer not initialized")
+                
             sentiments = []
+            articles_processed = 0
             
-            for article in articles[:20]:  # Analyze top 20 articles
-                # Combine title and description for better context
-                text = f"{article.get('title', '')} {article.get('description', '')}"
-                
-                if not text.strip():
-                    continue
-                
-                # Truncate to 512 tokens (transformer limit)
-                text = text[:512]
-                
+            for article in articles[:50]:  # Analyze up to 50 articles for deeper sentiment
                 try:
+                    # Combine title and description for better context
+                    text = f"{article.get('title', '')} {article.get('description', '')}"
+                    
+                    if not text.strip():
+                        continue
+                    
+                    # Truncate to 512 tokens (transformer limit)
+                    text = text[:512]
+                    
+                    # Use NLP transformer for analysis
                     result = sentiment_analyzer(text, truncation=True)
                     
                     # Parse transformer output
                     label = result[0]["label"].lower()
-                    score = result[0]["score"]
+                    score = result[0]["score"]  # Confidence score (0-1)
                     
-                    # Convert to -1 to 1 scale
-                    if "negative" in label or "negative" in label:
-                        sentiment_value = -score
+                    # Convert to -1 to 1 scale based on label and confidence
+                    if "negative" in label:
+                        sentiment_value = -score  # Negative: -1 to 0
                     elif "positive" in label:
-                        sentiment_value = score
+                        sentiment_value = score   # Positive: 0 to 1
                     else:
-                        sentiment_value = 0
+                        sentiment_value = 0      # Neutral: 0
                     
                     sentiments.append(sentiment_value)
+                    articles_processed += 1
                     
                 except Exception as e:
-                    self.log(f"NLP analysis error: {str(e)}", "WARNING")
+                    self.log(f"Error analyzing article with NLP: {str(e)}", "WARNING")
                     continue
             
             if not sentiments:
-                return {"score": 0, "label": "neutral", "count": 0}
+                self.log("NLP analysis produced no sentiment scores, returning neutral", "WARNING")
+                return {"score": 0, "label": "neutral", "count": len(articles), "articles_analyzed": 0, "method": "nlp"}
             
-            # Average sentiment score
+            # Average sentiment score across all analyzed articles
             avg_score = sum(sentiments) / len(sentiments)
             
-            # Categorize
+            # Categorize with thresholds
             if avg_score > 0.15:
                 label = "bullish"
             elif avg_score < -0.15:
@@ -262,15 +311,18 @@ class SentimentAgent(BaseAgent):
             else:
                 label = "neutral"
             
+            self.log(f"NLP analysis: {articles_processed}/{len(articles)} articles, avg score {avg_score:.3f}, label {label}", "INFO")
+            
             return {
                 "score": round(avg_score, 3),
                 "label": label,
                 "count": len(articles),
-                "articles_analyzed": len(sentiments)
+                "articles_analyzed": articles_processed,
+                "method": "nlp"
             }
             
         except Exception as e:
-            self.log(f"NLP sentiment analysis failed: {str(e)}", "ERROR")
+            self.log(f"NLP sentiment analysis failed: {str(e)}, falling back to keywords", "ERROR")
             return self._analyze_with_keywords(articles)
     
     def _analyze_with_keywords(self, articles: List[Dict]) -> Dict[str, Any]:
@@ -278,15 +330,19 @@ class SentimentAgent(BaseAgent):
         # Keyword matching (when NLP not available)
         positive_keywords = [
             "surge", "soar", "rally", "gain", "growth", "profit", "beat", 
-            "strong", "upgrade", "bullish", "record", "high", "outperform"
+            "strong", "upgrade", "bullish", "record", "high", "outperform",
+            "boom", "breakout", "accelerate", "momentum", "success", "win",
+            "excellent", "impressive", "positive", "fantastic", "tremendous"
         ]
         negative_keywords = [
             "plunge", "drop", "fall", "loss", "miss", "weak", "downgrade", 
-            "bearish", "low", "underperform", "decline", "cut", "warning"
+            "bearish", "low", "underperform", "decline", "cut", "warning",
+            "crash", "risk", "collapse", "fail", "threat", "concern",
+            "poor", "negative", "disappointing", "disaster", "problem"
         ]
         
         total_score = 0
-        for article in articles[:20]:  # Analyze top 20 articles
+        for article in articles[:50]:  # Analyze up to 50 articles for deeper sentiment
             title = (article.get("title", "") + " " + article.get("description", "")).lower()
             
             pos_count = sum(1 for kw in positive_keywords if kw in title)
@@ -382,7 +438,9 @@ class SentimentAgent(BaseAgent):
                 "overall_score": round(score, 3),
                 "sentiment": label,
                 "confidence": round(confidence, 2),
-                "news_score": news_sentiment.get("score", 0)
+                "news_score": news_sentiment.get("score", 0),
+                "method": news_sentiment.get("method", "unknown"),  # Include NLP vs keyword method
+                "articles_analyzed": news_sentiment.get("articles_analyzed", 0)
             }
         
         return aggregated
@@ -416,10 +474,21 @@ class SentimentAgent(BaseAgent):
             else:
                 label = "neutral"
 
+            # Track which methods were used
+            methods_used = []
+            if av.get("count", 0) > 0:
+                methods_used.append("alpha_vantage")
+            if na.get("method") == "nlp":
+                methods_used.append("nlp")
+            elif na.get("count", 0) > 0:
+                methods_used.append("newsapi")
+
             merged[symbol] = {
                 "score": score,
                 "label": label,
                 "count": (av.get("count", 0) or 0) + (na.get("count", 0) or 0),
+                "method": ", ".join(methods_used) if methods_used else "unknown",
+                "articles_analyzed": na.get("articles_analyzed", 0),
                 "components": {
                     "alpha_vantage": av,
                     "newsapi": na,

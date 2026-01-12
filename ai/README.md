@@ -1,78 +1,42 @@
-# AI Portfolio Advisor
+# AI Analysis
 
-This folder contains scripts to get AI-powered portfolio analysis and investment advice with **automatic fresh data fetching**.
+This folder contains the multi-agent AI system for comprehensive portfolio analysis and investment recommendations.
 
-## Quick Start (Recommended)
+See the full documentation at [ai/multi_agent/README.md](multi_agent/README.md).
 
-### Option 1: OpenAI (GPT-4)
-**Easiest to get started** - Most popular AI API
+## Quick Start
 
-1. Add your OpenAI API key to the `.env` file in the parent folder:
-   ```
-   OPENAI_API_KEY="your-key-here"
-   ```
-   Get a key from [OpenAI](https://platform.openai.com/api-keys)
+Run the multi-agent analysis:
+```bash
+cd ai
+python run_multi_agent.py
+```
 
-2. Install the library:
-   ```bash
-   pip install openai
-   ```
-
-3. Run the analysis (automatically fetches fresh data):
-   ```bash
-   cd ai
-   python quick_start_openai.py
-   ```
-
-**What happens:**
-- ✅ Fetches fresh portfolio data from E*TRADE API
-- ✅ Loads data and generates comprehensive AI prompt
-- ✅ Analyzes with GPT-4
-- ✅ Saves timestamped analysis file
-- ✅ Prints recommendations to console
-
-**Cost:** ~$0.20-0.50 per analysis (GPT-4o) or ~$0.01-0.05 (GPT-4o-mini)
-
----
+This will:
+- ✅ Load your latest E*TRADE portfolio data
+- ✅ Run Sentiment, Macro, Sector, and Integrator agents
+- ✅ Save JSON and text reports to `ai/analysis_reports/`
+- ✅ Print an executive summary with top actions
 
 ## Viewing Saved Analyses
 
-All AI analyses are automatically saved as timestamped files in the `ai/` folder.
+Multi-agent reports are saved in the `ai/analysis_reports/` folder.
 
-**View all your saved analyses:**
+**List saved reports:**
 ```bash
 python view_analyses.py
 ```
 
-This shows:
-- List of all analysis files
-- Portfolio value at time of analysis
-- Generation date and time
-- File sizes
-
-**Open a specific analysis:**
+**Open the latest report:**
 ```bash
-notepad ai_analysis_20260101_193727.txt
+notepad analysis_reports\\multi_agent_report_YYYYMMDD_HHMMSS.txt
 ```
 
 ---
 
-## Full Featured Advisor (Optional)
+## Legacy Advisor (Optional)
 
-Use `portfolio_advisor.py` for interactive mode with multiple AI provider support:
-
-```bash
-cd ai
-python portfolio_advisor.py
-```
-
-Supports:
-- **OpenAI**
-
-
-*Note: This version does not auto-fetch fresh data. Use `quick_start_openai.py` for automatic data updates.*
-
----
+`portfolio_advisor.py` is deprecated in favor of the multi-agent system and kept only for historical reference.
 
 ## What You Get
 
@@ -89,16 +53,10 @@ The AI will analyze your portfolio and provide:
 
 ## Output
 
-- **Screen Output:** Full analysis printed to console
-- **Saved File:** `ai_analysis_YYYYMMDD_HHMMSS.txt` in the `ai/` folder
-- **Reusable:** Run daily after fetching new portfolio data
+- **Screen Output:** Executive summary and top actions
+- **Saved Files:** `analysis_reports/multi_agent_analysis_*.json` and `analysis_reports/multi_agent_report_*.txt`
+- **Reusable:** Run daily to stay updated
 
 ---
 
-## API Key Setup
-
-### OpenAI
-- Sign up: https://platform.openai.com/signup
-- Get key: https://platform.openai.com/api-keys
-- Pricing: https://openai.com/api/pricing/
 

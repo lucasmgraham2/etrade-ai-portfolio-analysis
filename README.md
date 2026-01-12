@@ -1,6 +1,18 @@
 # E*TRADE AI Portfolio Analysis
 
-AI-powered portfolio analysis and recommendations using E*TRADE data and advanced language models.
+Comprehensive portfolio analysis with advanced multi-agent AI system for investment recommendations.
+
+## 🚀 New: Multi-Agent Analysis System
+
+The project now includes a sophisticated multi-agent AI system that provides:
+
+- **Sentiment Analysis**: Market psychology from news, social media, and forums
+- **Macro Analysis**: Economic indicators and market favorability scoring
+- **Sector Predictions**: ML-based sector outperformance forecasts  
+- **Integrated Recommendations**: BUY/SELL/HOLD decisions with prioritized actions
+- **Risk Assessment**: Multi-factor portfolio risk evaluation
+
+See [ai/multi_agent/README.md](ai/multi_agent/README.md) for full details.
 
 ## 📁 Project Structure
 
@@ -8,16 +20,25 @@ AI-powered portfolio analysis and recommendations using E*TRADE data and advance
 etrade-ai-portfolio-analysis/
 ├── etrade/                      # E*TRADE data fetching
 │   ├── get_all_data.py         # Fetch portfolio data from E*TRADE
-│   ├── generate_ai_prompt.py   # Generate prompts for AI analysis
+│   ├── generate_ai_prompt.py   # Legacy prompt generator (deprecated)
 │   ├── requirements.txt        # E*TRADE dependencies
 │   └── etrade_reports/         # Downloaded portfolio data (gitignored)
 │
 ├── ai/                          # AI analysis tools
-│   ├── portfolio_advisor.py    # Main AI portfolio advisor
+│   ├── multi_agent/            # ⭐ NEW: Multi-agent analysis system
+│   │   ├── base_agent.py       # Base agent class
+│   │   ├── orchestrator.py     # Agent coordinator
+│   │   ├── sentiment_agent.py  # Market sentiment analysis
+│   │   ├── macro_agent.py      # Macroeconomic evaluation
+│   │   ├── sector_agent.py     # Sector predictions
+│   │   ├── integrator_agent.py # Portfolio recommendations
+│   │   └── README.md           # Multi-agent documentation
+│   ├── run_multi_agent.py      # ⭐ Run multi-agent analysis
+│   ├── portfolio_advisor.py    # Legacy single-agent advisor (deprecated)
 │   ├── daily_analysis.py       # Automated daily analysis
 │   ├── view_analyses.py        # View past analyses
 │   ├── requirements.txt        # AI dependencies
-│   └── README.md              # AI module documentation
+│   └── README.md               # AI module documentation
 │
 ├── .env                         # Your API keys (create from .env.example)
 ├── .env.example                # Template for API keys
@@ -34,9 +55,30 @@ cd etrade-ai-portfolio-analysis
 
 ### 2. Set Up API Keys
 
-**Create a `.env` file in the root directory and add your API keys:**
+**For live market data, get free API keys:**
 
-#### E*TRADE API (Required)
+1. Copy the environment template:
+   ```bash
+   Copy-Item .env.example .env
+   ```
+
+2. Get your free API keys (takes ~10 minutes):
+   - **Alpha Vantage**: https://www.alphavantage.co/support/#api-key
+   - **NewsAPI**: https://newsapi.org/register  
+   - **FRED**: https://fred.stlouisfed.org/docs/api/api_key.html
+
+3. Add them to `.env`:
+   ```
+   ALPHA_VANTAGE_API_KEY=your_key_here
+   NEWSAPI_KEY=your_key_here
+   FRED_API_KEY=your_key_here
+   ```
+
+**See [API_KEYS_GUIDE.md](API_KEYS_GUIDE.md) for detailed setup instructions.**
+
+**Note:** The system works without API keys using simulated data, but live data provides real market analysis.
+
+#### E*TRADE API (Required for Portfolio Data)
 1. Go to [E*TRADE Developer Portal](https://developer.etrade.com/home)
 2. Create an application to get your Consumer Key and Secret
 3. Add them to `.env`:
@@ -45,31 +87,24 @@ cd etrade-ai-portfolio-analysis
    ETRADE_CONSUMER_SECRET=your_actual_secret
    ```
 
-#### OpenAI API (ChatGPT)
-1. Get API key from [OpenAI Platform](https://platform.openai.com/api-keys)
-2. Add to `.env`:
-   ```
-   OPENAI_API_KEY=sk-...
-   ```
-
 ### 3. Install Dependencies
 
 ```bash
 pip install -r etrade/requirements.txt
-pip install openai python-dotenv
+pip install -r ai/requirements.txt
 ```
 
-### 4. Run Complete Analysis (Easiest!)
+### 4. Run Complete Analysis (Recommended)
 
 **One command to do everything:**
 ```bash
-python run_analysis.py
+python run_complete_analysis.py
 ```
 
 This will:
 - Fetch your portfolio data from E*TRADE
-- Run AI analysis
-- Display results and save to file
+- Run multi-agent AI analysis
+- Generate JSON + text reports in ai/analysis_reports/
 
 **Or run components separately:**
 
@@ -80,7 +115,7 @@ python etrade/get_all_data.py
 
 **Run AI Analysis:**
 ```bash
-python ai/portfolio_advisor.py
+python ai/run_multi_agent.py
 ```
 
 **Daily Analysis:**
@@ -92,15 +127,15 @@ python ai/daily_analysis.py
 
 ### Complete Analysis (Recommended)
 ```bash
-python run_analysis.py
+python run_complete_analysis.py
 ```
-One script that does everything - fetches data and runs AI analysis!
+Runs the full pipeline: fetches data and runs multi-agent AI analysis.
 
 ### Daily Analysis
 ```bash
 python ai/daily_analysis.py
 ```
-Automatically fetches fresh data and runs AI analysis.
+Automatically fetches fresh data and runs multi-agent AI analysis.
 
 ### View Past Analyses
 ```bash
@@ -111,7 +146,7 @@ Browse and compare historical AI recommendations.
 ### Manual Steps
 If you prefer to run each step manually:
 1. Fetch data: `python etrade/get_all_data.py`
-2. Run analysis: `python ai/portfolio_advisor.py`
+2. Run analysis: `python ai/run_multi_agent.py`
 
 ## 🛠️ Troubleshooting
 

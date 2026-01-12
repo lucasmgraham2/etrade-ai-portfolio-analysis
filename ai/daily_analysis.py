@@ -46,24 +46,24 @@ def main():
         print(f"\n✗ Failed to fetch portfolio data: {e}\n")
         return
     
-    # Step 2: Run AI analysis
+    # Step 2: Run Multi-Agent AI analysis
     print("="*80)
-    print(" STEP 2: Running AI Analysis")
+    print(" STEP 2: Running Multi-Agent AI Analysis")
     print("="*80 + "\n")
     
-    ai_script = os.path.join(root_dir, "ai", "portfolio_advisor.py")
+    ai_script = os.path.join(root_dir, "ai", "run_multi_agent.py")
     try:
-        subprocess.run([sys.executable, ai_script], cwd=root_dir, check=True)
-        print("\n✓ AI analysis completed\n")
+        subprocess.run([sys.executable, ai_script], cwd=os.path.join(root_dir, "ai"), check=True)
+        print("\n✓ Multi-agent AI analysis completed\n")
     except subprocess.CalledProcessError as e:
-        print(f"\n✗ AI analysis failed: {e}\n")
+        print(f"\n✗ Multi-agent AI analysis failed: {e}\n")
         return
     
     print("="*80)
     print(" DAILY ANALYSIS COMPLETE!")
     print("="*80 + "\n")
     print("✅ Your daily portfolio analysis is ready!")
-    print("📁 Check the ai/ folder for the latest analysis file\n")
+    print("📁 View reports in ai/analysis_reports/\n")
 
 if __name__ == "__main__":
     main()

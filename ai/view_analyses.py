@@ -7,59 +7,55 @@ import glob
 from datetime import datetime
 
 def list_analyses():
-    """List all saved AI analysis files"""
+    """List all saved multi-agent analysis reports"""
+    reports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'analysis_reports')
+    text_reports = glob.glob(os.path.join(reports_dir, 'multi_agent_report_*.txt'))
     
-    # Get all analysis files
-    analysis_files = glob.glob('ai_analysis_*.txt')
-    
-    if not analysis_files:
-        print("\n📭 No analysis files found yet.")
-        print("Run quick_start_openai.py to generate your first analysis!\n")
+    if not text_reports:
+        print("\n📭 No multi-agent reports found yet.")
+        print("Run run_multi_agent.py or the pipeline to generate your first report!\n")
         return
     
-    # Sort by date (newest first)
-    analysis_files.sort(reverse=True)
+    # Sort newest first
+    text_reports.sort(reverse=True)
     
     print("\n" + "="*80)
-    print(" 📊 SAVED AI PORTFOLIO ANALYSES")
+    print(" 📊 SAVED MULTI-AGENT ANALYSIS REPORTS")
     print("="*80 + "\n")
     
-    for i, filepath in enumerate(analysis_files, 1):
-        # Extract timestamp from filename
-        timestamp_str = filepath.replace('ai_analysis_', '').replace('.txt', '')
+    for i, filepath in enumerate(text_reports, 1):
+        filename = os.path.basename(filepath)
+        timestamp_str = filename.replace('multi_agent_report_', '').replace('.txt', '')
         try:
             dt = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
             date_formatted = dt.strftime('%B %d, %Y at %I:%M %p')
         except:
             date_formatted = timestamp_str
         
-        # Try to extract portfolio value from file
-        portfolio_value = "Unknown"
+        # Extract portfolio value line from report
+        portfolio_line = "Portfolio value: Unknown"
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 for line in f:
-                    if 'Portfolio Value:' in line:
-                        portfolio_value = line.split('Portfolio Value:')[1].strip()
+                    if line.strip().startswith('Portfolio value:'):
+                        portfolio_line = line.strip()
                         break
         except:
             pass
         
-        print(f"{i}. {filepath}")
-        print(f"   Generated: {date_formatted}")
-        print(f"   Portfolio: {portfolio_value}")
-        
-        # Get file size
         size_kb = os.path.getsize(filepath) / 1024
+        print(f"{i}. {filename}")
+        print(f"   Generated: {date_formatted}")
+        print(f"   {portfolio_line}")
         print(f"   Size: {size_kb:.1f} KB\n")
     
     print("="*80)
-    print(f"Total analyses saved: {len(analysis_files)}\n")
+    print(f"Total reports saved: {len(text_reports)}\n")
     
-    # Show latest analysis preview
-    if analysis_files:
-        print("To view the latest analysis:")
-        print(f"  notepad {analysis_files[0]}")
-        print("\nOr open it from the file explorer in the ai/ folder\n")
+    if text_reports:
+        print("To view the latest report:")
+        print(f"  notepad {text_reports[0]}")
+        print("\nOr open it from the file explorer in ai/analysis_reports\n")
 
 if __name__ == "__main__":
     list_analyses()

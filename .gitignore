@@ -12,6 +12,17 @@ etrade_reports/*.txt
 # AI analysis outputs (contains portfolio data)
 ai/ai_analysis_*.txt
 ai_analysis_*.txt
+ai/analysis_reports/*
+**/analysis_reports/**
+**/multi_agent_analysis_*.json
+**/multi_agent_report_*.txt
+**/ai_portfolio_prompt_populated.md
+
+# E*TRADE report files (any location)
+**/etrade_data_*.json
+**/etrade_summary_*.txt
+etrade/etrade_reports/DATA_AVAILABLE.txt
+etrade/etrade_reports/DATA_QUALITY_AUDIT.txt
 
 # Python
 __pycache__/

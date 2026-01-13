@@ -51,6 +51,10 @@ class SentimentAgent(BaseAgent):
         super().__init__("Sentiment", config)
         self.api_keys = config.get("api_keys", {}) if config else {}
         self.lookback_days = config.get("lookback_days", 7) if config else 7
+        # NewsAPI options (free-plan adherence by default)
+        self.newsapi_mode = (config.get("newsapi_mode") if config else None) or "free"  # free | everything | disabled
+        self.newsapi_max_calls = (config.get("newsapi_max_calls") if config else None) or 15  # cap per run
+        self.newsapi_page_size = (config.get("newsapi_page_size") if config else None) or 25  # reduce load
         
         # Initialize OpenAI client if available
         self.openai_client = None
@@ -103,32 +107,69 @@ class SentimentAgent(BaseAgent):
         Analyze news sentiment for portfolio symbols
         
         Uses APIs like:
-        - Alpha Vantage News Sentiment
-        - NewsAPI
-        - Finnhub
+        - Alpha Vantage News Sentiment (primary, reliable)
+        - NewsAPI (supplemental when quota available)
+        - Finnhub (free alternative)
+        
+        Workarounds for free-tier limitations:
+        - Prioritize high-value positions for NewsAPI quota
+        - Dynamic weight adjustment based on data availability
+        - Finnhub as backup for additional coverage
         """
         self.log("Fetching news sentiment...")
         
         has_av = "alpha_vantage" in self.api_keys
         has_newsapi = "newsapi" in self.api_keys
+        has_finnhub = "finnhub" in self.api_keys
         
-        # If both APIs are available, fetch in parallel and merge for higher fidelity
-        if has_av and has_newsapi:
-            av_data, newsapi_data = await asyncio.gather(
-                self._fetch_alpha_vantage_news(symbols),
-                self._fetch_newsapi_data(symbols)
-            )
-            return self._merge_news_sources(symbols, av_data, newsapi_data)
-        
-        # Single-source fallbacks
+        # Alpha Vantage is primary and most reliable
         if has_av:
-            return await self._fetch_alpha_vantage_news(symbols)
+            av_data = await self._fetch_alpha_vantage_news(symbols)
+            
+            # Try supplemental sources if available
+            supplemental_data = None
+            if has_newsapi:
+                newsapi_data = await self._fetch_newsapi_data(symbols)
+                # Only use if we got meaningful data (not just empty due to quota)
+                if newsapi_data and self._has_meaningful_data(newsapi_data):
+                    supplemental_data = newsapi_data
+            
+            # Finnhub as additional free source
+            if has_finnhub and not supplemental_data:
+                finnhub_data = await self._fetch_finnhub_news(symbols)
+                if finnhub_data and self._has_meaningful_data(finnhub_data):
+                    supplemental_data = finnhub_data
+            
+            # Merge if we have supplemental data, otherwise use AV alone
+            if supplemental_data:
+                return self._merge_news_sources(symbols, av_data, supplemental_data)
+            else:
+                self.log("Using Alpha Vantage only (supplemental sources unavailable)", "INFO")
+                return av_data
+        
+        # Fallbacks if no Alpha Vantage
         if has_newsapi:
             return await self._fetch_newsapi_data(symbols)
+        if has_finnhub:
+            return await self._fetch_finnhub_news(symbols)
         
         # Simulated only if no keys provided
         self.log("No news API key found, using simulated data", "WARNING")
-        return
+        return {"source": "none", "symbols": {s: {"score": 0, "label": "neutral", "count": 0} for s in symbols}, "timestamp": datetime.now().isoformat()}
+    
+    def _has_meaningful_data(self, data: Dict[str, Any]) -> bool:
+        """Check if news data has meaningful content (not just empty due to quota/errors)"""
+        if not data or not isinstance(data, dict):
+            return False
+        symbols_data = data.get("symbols", {})
+        if not symbols_data:
+            return False
+        # Consider meaningful if at least one symbol has articles or non-zero score
+        for symbol_info in symbols_data.values():
+            if isinstance(symbol_info, dict):
+                if symbol_info.get("count", 0) > 0 or abs(symbol_info.get("score", 0)) > 0.05:
+                    return True
+        return False
     
     async def _fetch_alpha_vantage_news(self, symbols: List[str]) -> Dict[str, Any]:
         """Fetch news sentiment from Alpha Vantage API"""
@@ -160,6 +201,51 @@ class SentimentAgent(BaseAgent):
             "timestamp": datetime.now().isoformat()
         }
     
+    async def _fetch_finnhub_news(self, symbols: List[str]) -> Dict[str, Any]:
+        """Fetch news from Finnhub (free tier: 60 calls/min)"""
+        api_key = self.api_keys.get("finnhub")
+        
+        if not api_key:
+            return {"source": "finnhub", "symbols": {}, "timestamp": datetime.now().isoformat()}
+        
+        symbol_sentiments = {}
+        async with aiohttp.ClientSession() as session:
+            for symbol in symbols:
+                try:
+                    # Finnhub company news endpoint (free tier)
+                    from_date = (datetime.now() - timedelta(days=self.lookback_days)).strftime('%Y-%m-%d')
+                    to_date = datetime.now().strftime('%Y-%m-%d')
+                    url = f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={from_date}&to={to_date}&token={api_key}"
+                    
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            articles = await response.json()
+                            if articles and isinstance(articles, list):
+                                # Convert Finnhub format to our internal format
+                                formatted_articles = [
+                                    {"title": a.get("headline", ""), "description": a.get("summary", "")}
+                                    for a in articles[:50]
+                                ]
+                                sentiment = self._analyze_news_articles(formatted_articles)
+                                symbol_sentiments[symbol] = sentiment
+                            else:
+                                symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none"}
+                        else:
+                            self.log(f"Finnhub error for {symbol}: HTTP {response.status}", "WARNING")
+                            symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none"}
+                except Exception as e:
+                    self.log(f"Error fetching from Finnhub for {symbol}: {str(e)}", "WARNING")
+                    symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none"}
+                
+                # Respect rate limits (60/min = ~1/sec)
+                await asyncio.sleep(1.1)
+        
+        return {
+            "source": "finnhub",
+            "symbols": symbol_sentiments,
+            "timestamp": datetime.now().isoformat()
+        }
+    
     async def _fetch_newsapi_data(self, symbols: List[str]) -> Dict[str, Any]:
         """Fetch news from NewsAPI and analyze sentiment with NLP"""
         api_key = self.api_keys.get("newsapi")
@@ -168,14 +254,72 @@ class SentimentAgent(BaseAgent):
             self.log("NewsAPI key not configured, skipping NewsAPI", "WARNING")
             return {"source": "newsapi", "symbols": {}, "timestamp": datetime.now().isoformat()}
         
+        # Daily cache file to avoid repeated calls within the same day
+        date_str = datetime.now().strftime('%Y%m%d')
+        cache_path = f"analysis_cache/newsapi_cache_{date_str}.json"
+        news_cache: Dict[str, Any] = {}
+        # Daily lock to skip NewsAPI once cap/429 is observed
+        lock_filename = f"newsapi_lock_{date_str}.txt"
+        try:
+            # Try loading existing cache
+            import os, json
+            full_cache_path = os.path.join(os.path.dirname(__file__), "..", "analysis_cache", f"newsapi_cache_{date_str}.json")
+            full_cache_path = os.path.normpath(full_cache_path)
+            if os.path.exists(full_cache_path):
+                with open(full_cache_path, 'r', encoding='utf-8') as f:
+                    news_cache = json.load(f)
+            # Check lock file
+            lock_path = os.path.join(os.path.dirname(__file__), "..", "analysis_cache", lock_filename)
+            lock_path = os.path.normpath(lock_path)
+            if os.path.exists(lock_path):
+                self.log("NewsAPI daily cap previously hit; skipping NewsAPI calls today", "INFO")
+                return {"source": "newsapi", "symbols": {}, "timestamp": datetime.now().isoformat(), "adherence": "daily_cap_lock"}
+        except Exception as e:
+            self.log(f"Failed to load NewsAPI cache: {e}", "WARNING")
+
+        def save_cache():
+            try:
+                import os, json
+                full_cache_path_local = os.path.join(os.path.dirname(__file__), "..", "analysis_cache", f"newsapi_cache_{date_str}.json")
+                full_cache_path_local = os.path.normpath(full_cache_path_local)
+                os.makedirs(os.path.dirname(full_cache_path_local), exist_ok=True)
+                with open(full_cache_path_local, 'w', encoding='utf-8') as f:
+                    json.dump(news_cache, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                self.log(f"Failed to save NewsAPI cache: {e}", "WARNING")
+
         symbol_sentiments = {}
         rate_limit_hit = False
+        calls_made = 0
+
+        # Determine strategy based on mode
+        mode = self.newsapi_mode
+        if mode == "disabled":
+            self.log("NewsAPI disabled by configuration", "INFO")
+            return {"source": "newsapi", "symbols": {}, "timestamp": datetime.now().isoformat()}
+
+        # In free mode, limit per-run requests and prioritize a subset of symbols
+        symbols_to_query = symbols
+        if mode == "free":
+            symbols_to_query = symbols[:max(1, min(len(symbols), self.newsapi_max_calls))]
+            if len(symbols_to_query) < len(symbols):
+                self.log(f"NewsAPI free mode: limiting symbol queries to {len(symbols_to_query)}/{len(symbols)}", "INFO")
+
         async with aiohttp.ClientSession() as session:
-            for symbol in symbols:
+            skip_logged = False
+            for symbol in symbols_to_query:
                 try:
                     # Skip if we've already hit rate limit
                     if rate_limit_hit:
-                        self.log(f"Skipping {symbol} due to API rate limit", "WARNING")
+                        # Avoid spamming logs; one message is enough
+                        if not skip_logged:
+                            self.log("Skipping remaining symbols due to NewsAPI rate limit", "INFO")
+                            skip_logged = True
+                        symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                        continue
+                    if mode == "free" and calls_made >= self.newsapi_max_calls:
+                        self.log("NewsAPI free mode cap reached; switching to headlines fallback", "INFO")
+                        rate_limit_hit = True
                         symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
                         continue
                     
@@ -183,6 +327,15 @@ class SentimentAgent(BaseAgent):
                     end_date = datetime.now()
                     start_date = end_date - timedelta(days=self.lookback_days)
                     
+                    # Use cache first in the same day
+                    cached = news_cache.get(symbol)
+                    if cached and cached.get("from") == start_date.strftime('%Y-%m-%d'):
+                        articles = cached.get("articles", [])
+                        self.log(f"NewsAPI cache hit: {len(articles)} articles for {symbol}", "DEBUG")
+                        sentiment = self._analyze_news_articles(articles) if articles else {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                        symbol_sentiments[symbol] = sentiment
+                        continue
+
                     url = (
                         f"https://newsapi.org/v2/everything?"
                         f"q={symbol}&"
@@ -190,7 +343,7 @@ class SentimentAgent(BaseAgent):
                         f"to={end_date.strftime('%Y-%m-%d')}&"
                         f"sortBy=relevancy&"
                         f"language=en&"
-                        f"pageSize=100&"
+                        f"pageSize={self.newsapi_page_size}&"
                         f"apiKey={api_key}"
                     )
                     
@@ -199,6 +352,15 @@ class SentimentAgent(BaseAgent):
                             data = await response.json()
                             articles = data.get("articles", [])
                             self.log(f"NewsAPI returned {len(articles)} articles for {symbol}", "DEBUG")
+                            # Update calls made and cache
+                            calls_made += 1
+                            news_cache[symbol] = {
+                                "from": start_date.strftime('%Y-%m-%d'),
+                                "to": end_date.strftime('%Y-%m-%d'),
+                                "count": len(articles),
+                                "articles": articles,
+                            }
+                            save_cache()
                             
                             # Prioritize NLP transformer analysis
                             if articles:
@@ -217,8 +379,18 @@ class SentimentAgent(BaseAgent):
                             symbol_sentiments[symbol] = sentiment
                         elif response.status == 429:
                             # Rate limit hit - log and skip remaining
-                            self.log(f"NewsAPI rate limit (429) for {symbol} - free tier exhausted", "WARNING")
+                            self.log(f"NewsAPI rate limit (429) - free tier exhausted", "WARNING")
                             rate_limit_hit = True
+                            # Create lock file to skip future runs today
+                            try:
+                                import os
+                                lock_path_write = os.path.join(os.path.dirname(__file__), "..", "analysis_cache", lock_filename)
+                                lock_path_write = os.path.normpath(lock_path_write)
+                                os.makedirs(os.path.dirname(lock_path_write), exist_ok=True)
+                                with open(lock_path_write, 'w', encoding='utf-8') as f:
+                                    f.write(f"429 hit at {datetime.now().isoformat()}\n")
+                            except Exception as e:
+                                self.log(f"Failed to write NewsAPI lock file: {e}", "WARNING")
                             symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
                         else:
                             self.log(f"NewsAPI error for {symbol}: HTTP {response.status}", "WARNING")
@@ -230,6 +402,25 @@ class SentimentAgent(BaseAgent):
                 # Add delay to respect rate limits
                 await asyncio.sleep(1.0)
         
+        # If we hit rate limit or cap, try one batch of top-headlines as fallback
+        if rate_limit_hit and mode in ("free", "everything"):
+            try:
+                self.log("Attempting top-headlines batch fallback", "INFO")
+                batch_sentiment = await self._fetch_newsapi_top_headlines(api_key)
+                if batch_sentiment:
+                    # Apply aggregate sentiment to remaining symbols not analyzed
+                    for symbol in symbols:
+                        if symbol not in symbol_sentiments:
+                            symbol_sentiments[symbol] = {
+                                "score": batch_sentiment["score"],
+                                "label": batch_sentiment["label"],
+                                "count": batch_sentiment.get("count", 0),
+                                "articles_analyzed": batch_sentiment.get("articles_analyzed", 0),
+                                "method": "top-headlines"
+                            }
+            except Exception as e:
+                self.log(f"Top-headlines fallback failed: {e}", "WARNING")
+
         self.log(f"NewsAPI analysis complete: {len([s for s in symbol_sentiments.values() if s.get('method') == 'nlp'])} symbols with NLP analysis", "INFO")
         
         return {
@@ -237,6 +428,32 @@ class SentimentAgent(BaseAgent):
             "symbols": symbol_sentiments,
             "timestamp": datetime.now().isoformat()
         }
+
+    async def _fetch_newsapi_top_headlines(self, api_key: str) -> Dict[str, Any]:
+        """Fetch a single batch of top-headlines (business, en) and compute aggregate sentiment.
+        This adheres to free tier by minimizing requests and still providing market context.
+        """
+        async with aiohttp.ClientSession() as session:
+            url = (
+                f"https://newsapi.org/v2/top-headlines?"
+                f"category=business&"
+                f"language=en&"
+                f"pageSize=100&"
+                f"apiKey={api_key}"
+            )
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    articles = data.get("articles", [])
+                    self.log(f"Top-headlines returned {len(articles)} articles", "DEBUG")
+                    sentiment = self._analyze_news_articles(articles) if articles else {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                    return sentiment
+                elif response.status == 429:
+                    self.log("Top-headlines rate limit hit (429)", "WARNING")
+                    return {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                else:
+                    self.log(f"Top-headlines error: HTTP {response.status}", "WARNING")
+                    return {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
     
     def _analyze_news_articles(self, articles: List[Dict]) -> Dict[str, Any]:
         """Analyze sentiment from news articles using NLP transformers"""
@@ -449,22 +666,41 @@ class SentimentAgent(BaseAgent):
         self,
         symbols: List[str],
         av_data: Dict[str, Any],
-        newsapi_data: Dict[str, Any]
+        supplemental_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Merge Alpha Vantage and NewsAPI sentiment into a single feed.
-        Weights default to AV 0.6 (broad coverage) and NewsAPI+OpenAI 0.4 (deeper reasoning).
+        """Merge Alpha Vantage and supplemental source sentiment with dynamic weighting.
+        Weights adapt based on actual data availability to avoid diluting good data.
         """
 
         merged = {}
         av_symbols = av_data.get("symbols", {}) if av_data else {}
-        na_symbols = newsapi_data.get("symbols", {}) if newsapi_data else {}
+        supp_symbols = supplemental_data.get("symbols", {}) if supplemental_data else {}
+        supp_source = supplemental_data.get("source", "supplemental") if supplemental_data else "unknown"
 
         for symbol in symbols:
             av = av_symbols.get(symbol, {"score": 0, "label": "neutral", "count": 0})
-            na = na_symbols.get(symbol, {"score": 0, "label": "neutral", "count": 0})
+            supp = supp_symbols.get(symbol, {"score": 0, "label": "neutral", "count": 0})
 
-            # Weighted score blend
-            score = av.get("score", 0) * 0.6 + na.get("score", 0) * 0.4
+            # Dynamic weighting based on data availability
+            av_has_data = av.get("count", 0) > 0 or abs(av.get("score", 0)) > 0.01
+            supp_has_data = supp.get("count", 0) > 0 or abs(supp.get("score", 0)) > 0.01
+            
+            if av_has_data and supp_has_data:
+                # Both have data: use weighted blend (AV 60%, supplemental 40%)
+                score = av.get("score", 0) * 0.6 + supp.get("score", 0) * 0.4
+                weight_method = "blended"
+            elif av_has_data:
+                # Only AV has data: use it at 100%
+                score = av.get("score", 0)
+                weight_method = "av_only"
+            elif supp_has_data:
+                # Only supplemental has data: use it at 100%
+                score = supp.get("score", 0)
+                weight_method = "supp_only"
+            else:
+                # Neither has data: neutral
+                score = 0
+                weight_method = "none"
 
             # Derive label with same thresholds used elsewhere
             if score > 0.12:
@@ -478,25 +714,26 @@ class SentimentAgent(BaseAgent):
             methods_used = []
             if av.get("count", 0) > 0:
                 methods_used.append("alpha_vantage")
-            if na.get("method") == "nlp":
+            if supp.get("method") == "nlp":
                 methods_used.append("nlp")
-            elif na.get("count", 0) > 0:
-                methods_used.append("newsapi")
+            elif supp.get("count", 0) > 0:
+                methods_used.append(supp_source.split("_")[-1] if "_" in supp_source else supp_source)
 
             merged[symbol] = {
                 "score": score,
                 "label": label,
-                "count": (av.get("count", 0) or 0) + (na.get("count", 0) or 0),
+                "count": (av.get("count", 0) or 0) + (supp.get("count", 0) or 0),
                 "method": ", ".join(methods_used) if methods_used else "unknown",
-                "articles_analyzed": na.get("articles_analyzed", 0),
+                "articles_analyzed": supp.get("articles_analyzed", 0),
+                "weight_method": weight_method,
                 "components": {
                     "alpha_vantage": av,
-                    "newsapi": na,
+                    supp_source: supp,
                 },
             }
 
         return {
-            "source": "merged_alphaVantage_newsapi",
+            "source": f"merged_av_{supp_source}",
             "symbols": merged,
             "timestamp": datetime.now().isoformat(),
         }

@@ -100,13 +100,12 @@ class MacroAgent(BaseAgent):
         self.log("="*60)
         
         try:
-            # Run both analyses in parallel
-            self.log("Fetching popular and alternative metrics...")
-            popular_results, alternative_results = await asyncio.gather(
-                self.popular_analyzer.analyze(),
-                self.alternative_analyzer.analyze(),
-                return_exceptions=True
-            )
+            # Run analyses sequentially to respect shared API rate limits (Alpha Vantage)
+            self.log("Fetching popular metrics...")
+            popular_results = await self.popular_analyzer.analyze()
+            await asyncio.sleep(1)  # brief pause between API families
+            self.log("Fetching alternative metrics...")
+            alternative_results = await self.alternative_analyzer.analyze()
             
             # Check for errors
             if isinstance(popular_results, Exception):

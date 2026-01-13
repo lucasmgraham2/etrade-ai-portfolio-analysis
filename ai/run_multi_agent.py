@@ -166,10 +166,20 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
         # Save new results
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Save JSON results
+        # Save JSON results (make them JSON-safe by stringifying Exceptions)
+        def _make_json_safe(obj):
+            """Recursively convert the results tree into JSON-serializable values."""
+            if isinstance(obj, Exception):
+                return {"error": str(obj), "type": obj.__class__.__name__}
+            if isinstance(obj, dict):
+                return {k: _make_json_safe(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [ _make_json_safe(v) for v in obj ]
+            return obj
+
         json_file = output_dir / f"multi_agent_analysis_{timestamp}.json"
         with open(json_file, 'w') as f:
-            json.dump(results, f, indent=2)
+            json.dump(_make_json_safe(results), f, indent=2)
         print(f"✓ JSON results saved: {json_file.relative_to(Path(__file__).parent)}")
         
         # Save text report

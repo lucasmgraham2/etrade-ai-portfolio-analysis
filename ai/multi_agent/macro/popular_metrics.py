@@ -3,7 +3,7 @@ Popular Macroeconomic Metrics Analyzer
 Analyzes mainstream economic indicators to assess market conditions
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 import asyncio
 import aiohttp
 from datetime import datetime
@@ -81,8 +81,8 @@ class PopularMetricsAnalyzer:
             "fed_funds_rate": self._score_fed_funds(fed_funds_data, cpi_data),
             "treasury_10y": self._score_treasury(treasury_10y_data),
             "sp500_performance": self._score_sp500(sp500_data),
-            "ism_manufacturing": self._score_ism(ism_mfg_data),
-            "ism_services": self._score_ism(ism_services_data),
+            "manufacturing_employment": self._score_manufacturing_emp(ism_mfg_data),
+            "jobless_claims": self._score_jobless_claims(ism_services_data),
             "retail_sales": self._score_retail_sales(retail_sales_data),
             "consumer_confidence": self._score_consumer_confidence(consumer_conf_data)
         }
@@ -101,8 +101,8 @@ class PopularMetricsAnalyzer:
                 "fed_funds_rate": fed_funds_data,
                 "treasury_10y": treasury_10y_data,
                 "sp500": sp500_data,
-                "ism_manufacturing": ism_mfg_data,
-                "ism_services": ism_services_data,
+                "ism_manufacturing": ism_mfg_data,  # Now manufacturing employment
+                "ism_services": ism_services_data,  # Now jobless claims
                 "retail_sales": retail_sales_data,
                 "consumer_confidence": consumer_conf_data
             },
@@ -110,49 +110,101 @@ class PopularMetricsAnalyzer:
         }
     
     async def _fetch_fred_data(self, series_id: str, name: str) -> Dict[str, Any]:
-        """Fetch data from FRED API"""
+        """Fetch data from FRED API with a single retry for transient issues"""
+        url = (
+            f"https://api.stlouisfed.org/fred/series/observations?"
+            f"series_id={series_id}&"
+            f"api_key={self.fred_api_key}&"
+            f"file_type=json&"
+            f"sort_order=desc&"
+            f"limit=24"
+        )
+        last_err = None
+        for attempt in range(2):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            observations = data.get("observations", [])
+                            valid_obs = [obs for obs in observations if obs["value"] != "."]
+                            if not valid_obs:
+                                raise ValueError(f"No valid data for {series_id}")
+                            current = float(valid_obs[0]["value"])
+                            previous = float(valid_obs[1]["value"]) if len(valid_obs) > 1 else current
+                            year_ago = float(valid_obs[12]["value"]) if len(valid_obs) > 12 else current
+                            return {
+                                "name": name,
+                                "current": current,
+                                "previous": previous,
+                                "year_ago": year_ago,
+                                "mom_change": current - previous,
+                                "yoy_change": current - year_ago,
+                                "yoy_change_pct": ((current - year_ago) / year_ago * 100) if year_ago != 0 else 0,
+                                "date": valid_obs[0]["date"],
+                                "trend": "increasing" if current > previous else "decreasing" if current < previous else "stable"
+                            }
+                        last_err = RuntimeError(f"FRED API error: {response.status}")
+            except Exception as e:
+                last_err = e
+            # brief pause before retry on transient issues
+            await asyncio.sleep(1)
+        print(f"[Popular Metrics] Error fetching {series_id}: {last_err}")
+        raise last_err
+
+    async def _fetch_fred_candidates(self, series_ids: List[str], name: str) -> Dict[str, Any]:
+        """Try multiple FRED series IDs until one succeeds."""
+        last_err = None
+        for sid in series_ids:
+            try:
+                return await self._fetch_fred_data(sid, name)
+            except Exception as e:
+                last_err = e
+                continue
+        # Fallback: try FRED series search by name
+        search_id = await self._search_fred_series(name)
+        if search_id:
+            try:
+                return await self._fetch_fred_data(search_id, name)
+            except Exception as e:
+                last_err = e
+        # Graceful fallback: return unavailable placeholder without raising
+        return {"name": name, "unavailable": True, "error": str(last_err) if last_err else "Series not found"}
+
+    async def _search_fred_series(self, search_text: str) -> str | None:
+        """Search FRED for a series ID by text and return the best match."""
+        url = (
+            f"https://api.stlouisfed.org/fred/series/search?"
+            f"search_text={search_text}&"
+            f"api_key={self.fred_api_key}&"
+            f"file_type=json"
+        )
         try:
-            url = (
-                f"https://api.stlouisfed.org/fred/series/observations?"
-                f"series_id={series_id}&"
-                f"api_key={self.fred_api_key}&"
-                f"file_type=json&"
-                f"sort_order=desc&"
-                f"limit=24"  # Get last 24 observations for trend analysis
-            )
-            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
                     if response.status == 200:
                         data = await response.json()
-                        observations = data.get("observations", [])
-                        
-                        # Filter out invalid values
-                        valid_obs = [obs for obs in observations if obs["value"] != "."]
-                        
-                        if not valid_obs:
-                            raise ValueError(f"No valid data for {series_id}")
-                        
-                        current = float(valid_obs[0]["value"])
-                        previous = float(valid_obs[1]["value"]) if len(valid_obs) > 1 else current
-                        year_ago = float(valid_obs[12]["value"]) if len(valid_obs) > 12 else current
-                        
-                        return {
-                            "name": name,
-                            "current": current,
-                            "previous": previous,
-                            "year_ago": year_ago,
-                            "mom_change": current - previous,
-                            "yoy_change": current - year_ago,
-                            "yoy_change_pct": ((current - year_ago) / year_ago * 100) if year_ago != 0 else 0,
-                            "date": valid_obs[0]["date"],
-                            "trend": "increasing" if current > previous else "decreasing" if current < previous else "stable"
-                        }
-                    else:
-                        raise RuntimeError(f"FRED API error: {response.status}")
-        except Exception as e:
-            print(f"[Popular Metrics] Error fetching {series_id}: {e}")
-            raise
+                        series = data.get("seriess", [])
+                        # Prefer monthly frequency and titles containing key words
+                        def score(item):
+                            title = item.get("title", "").lower()
+                            freq = item.get("frequency_short", "").lower()
+                            s = 0
+                            if "pmi" in title:
+                                s += 3
+                            if "ism" in title:
+                                s += 2
+                            if "services" in title or "non-manufacturing" in title:
+                                s += 1
+                            if freq == "m":
+                                s += 1
+                            return s
+                        if series:
+                            best = sorted(series, key=score, reverse=True)[0]
+                            return best.get("id")
+        except Exception:
+            return None
+        return None
     
     async def _fetch_gdp(self) -> Dict[str, Any]:
         """Fetch GDP data"""
@@ -179,12 +231,16 @@ class PopularMetricsAnalyzer:
         return await self._fetch_fred_data("DGS10", "10-Year Treasury Yield")
     
     async def _fetch_ism_manufacturing(self) -> Dict[str, Any]:
-        """Fetch ISM Manufacturing PMI"""
-        return await self._fetch_fred_data("NAPM", "ISM Manufacturing PMI")
+        """Fetch Manufacturing Employment (ISM PMI alternative)"""
+        # Manufacturing employment is a reliable alternative to ISM PMI
+        # Rising employment = expansion, falling = contraction
+        return await self._fetch_fred_data("MANEMP", "Manufacturing Employment")
     
     async def _fetch_ism_services(self) -> Dict[str, Any]:
-        """Fetch ISM Services PMI"""
-        return await self._fetch_fred_data("NMFBPI", "ISM Services PMI")
+        """Fetch Initial Jobless Claims (Services health alternative)"""
+        # Initial jobless claims inversely correlate with service sector health
+        # Lower claims = stronger economy
+        return await self._fetch_fred_data("ICSA", "Initial Jobless Claims")
     
     async def _fetch_retail_sales(self) -> Dict[str, Any]:
         """Fetch Retail Sales"""
@@ -195,45 +251,46 @@ class PopularMetricsAnalyzer:
         return await self._fetch_fred_data("UMCSENT", "Consumer Confidence")
     
     async def _fetch_sp500(self) -> Dict[str, Any]:
-        """Fetch S&P 500 data from Alpha Vantage"""
-        try:
-            url = (
-                f"https://www.alphavantage.co/query?"
-                f"function=TIME_SERIES_DAILY&"
-                f"symbol=SPY&"
-                f"apikey={self.alpha_vantage_key}"
-            )
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        daily_data = data.get("Time Series (Daily)", {})
-                        
-                        if not daily_data:
-                            raise ValueError("No S&P 500 data available")
-                        
-                        dates = sorted(daily_data.keys(), reverse=True)
-                        current_price = float(daily_data[dates[0]]["4. close"])
-                        
-                        # Calculate returns
-                        month_ago_price = float(daily_data[dates[21]]["4. close"]) if len(dates) > 21 else current_price
-                        three_month_price = float(daily_data[dates[63]]["4. close"]) if len(dates) > 63 else current_price
-                        year_ago_price = float(daily_data[dates[252]]["4. close"]) if len(dates) > 252 else current_price
-                        
-                        return {
-                            "name": "S&P 500",
-                            "current": current_price,
-                            "1m_return": ((current_price - month_ago_price) / month_ago_price * 100),
-                            "3m_return": ((current_price - three_month_price) / three_month_price * 100),
-                            "1y_return": ((current_price - year_ago_price) / year_ago_price * 100),
-                            "date": dates[0]
-                        }
-                    else:
-                        raise RuntimeError(f"Alpha Vantage API error: {response.status}")
-        except Exception as e:
-            print(f"[Popular Metrics] Error fetching S&P 500: {e}")
-            raise
+        """Fetch S&P 500 data from Alpha Vantage with simple rate-limit retry"""
+        url = (
+            f"https://www.alphavantage.co/query?"
+            f"function=TIME_SERIES_DAILY&"
+            f"symbol=SPY&"
+            f"apikey={self.alpha_vantage_key}"
+        )
+        last_err = None
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            daily_data = data.get("Time Series (Daily)", {})
+                            if not daily_data:
+                                raise ValueError("No S&P 500 data available")
+                            dates = sorted(daily_data.keys(), reverse=True)
+                            current_price = float(daily_data[dates[0]]["4. close"])
+                            month_ago_price = float(daily_data[dates[21]]["4. close"]) if len(dates) > 21 else current_price
+                            three_month_price = float(daily_data[dates[63]]["4. close"]) if len(dates) > 63 else current_price
+                            year_ago_price = float(daily_data[dates[252]]["4. close"]) if len(dates) > 252 else current_price
+                            return {
+                                "name": "S&P 500",
+                                "current": current_price,
+                                "1m_return": ((current_price - month_ago_price) / month_ago_price * 100),
+                                "3m_return": ((current_price - three_month_price) / three_month_price * 100),
+                                "1y_return": ((current_price - year_ago_price) / year_ago_price * 100),
+                                "date": dates[0]
+                            }
+                        if response.status == 429:
+                            last_err = RuntimeError("Alpha Vantage rate limit hit (429)")
+                            await asyncio.sleep(15)
+                            continue
+                        last_err = RuntimeError(f"Alpha Vantage API error: {response.status}")
+            except Exception as e:
+                last_err = e
+            await asyncio.sleep(2)
+        print(f"[Popular Metrics] Error fetching S&P 500: {last_err}")
+        raise last_err
     
     def _score_gdp(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -460,6 +517,61 @@ class PopularMetricsAnalyzer:
             "data": data
         }
     
+    def _score_manufacturing_emp(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Score Manufacturing Employment
+        - Rising employment (>2% YoY): Strong expansion (70-100)
+        - Stable (0-2%): Moderate growth (50-70)
+        - Falling (<0%): Contraction (0-50)
+        """
+        if isinstance(data, Exception):
+            return {"score": 50, "reasoning": "Data unavailable", "error": str(data)}
+        
+        yoy_change = data.get("yoy_change_pct", 0)
+        current = data.get("current", 0)
+        name = data.get("name", "Manufacturing Employment")
+        
+        if yoy_change >= 2.0:
+            score = 70 + min(30, (yoy_change - 2.0) * 15)
+        elif yoy_change >= 0:
+            score = 50 + yoy_change * 10
+        else:
+            score = max(10, 50 + yoy_change * 10)
+        
+        return {
+            "score": round(score, 1),
+            "reasoning": f"{name} {yoy_change:+.1f}% YoY ({'expansion' if yoy_change >= 0 else 'contraction'})",
+            "data": data
+        }
+    
+    def _score_jobless_claims(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Score Initial Jobless Claims (inverse indicator)
+        - Falling claims (<-10% YoY): Strong economy (70-100)
+        - Stable (-10% to +10%): Moderate (50-70)
+        - Rising claims (>+10%): Weakening (0-50)
+        """
+        if isinstance(data, Exception):
+            return {"score": 50, "reasoning": "Data unavailable", "error": str(data)}
+        
+        yoy_change = data.get("yoy_change_pct", 0)
+        current = data.get("current", 0)
+        name = data.get("name", "Initial Jobless Claims")
+        
+        # Inverse scoring: lower claims = better economy
+        if yoy_change <= -10:
+            score = 70 + min(30, abs(yoy_change + 10) * 3)
+        elif yoy_change <= 10:
+            score = 50 + (10 - abs(yoy_change)) * 2
+        else:
+            score = max(10, 50 - (yoy_change - 10) * 4)
+        
+        return {
+            "score": round(score, 1),
+            "reasoning": f"{name} {yoy_change:+.1f}% YoY ({'improving' if yoy_change < 0 else 'worsening'})",
+            "data": data
+        }
+    
     def _score_ism(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Score ISM PMI (both Manufacturing and Services)
@@ -468,8 +580,8 @@ class PopularMetricsAnalyzer:
         - 45-50: Slight contraction (40-55)
         - Below 45: Contraction (0-40)
         """
-        if isinstance(data, Exception):
-            return {"score": 50, "reasoning": "Data unavailable", "error": str(data)}
+        if isinstance(data, Exception) or data.get("unavailable"):
+            return {"score": 50, "reasoning": "ISM data unavailable", "data": data}
         
         pmi = data.get("current", 50)
         name = data.get("name", "ISM PMI")

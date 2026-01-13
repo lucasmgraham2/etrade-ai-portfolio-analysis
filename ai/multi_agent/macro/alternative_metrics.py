@@ -3,7 +3,7 @@ Alternative Macroeconomic Metrics Analyzer
 Analyzes less mainstream but valuable economic indicators
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 import asyncio
 import aiohttp
 from datetime import datetime
@@ -51,9 +51,9 @@ class AlternativeMetricsAnalyzer:
             Dictionary with scores, data, and overall assessment
         """
         print("[Alternative Metrics] Starting analysis...")
-        
-        # Fetch all metrics in parallel
-        tasks = [
+
+        # Fetch FRED-backed metrics in parallel (fast, lenient rate limits)
+        fred_tasks = [
             self._fetch_yield_curve(),
             self._fetch_m2_money_supply(),
             self._fetch_high_yield_spreads(),
@@ -61,18 +61,18 @@ class AlternativeMetricsAnalyzer:
             self._fetch_sahm_rule(),
             self._fetch_dollar_index(),
             self._fetch_abi(),
-            self._fetch_copper(),
-            self._fetch_luxury_sales(),
-            self._fetch_gold_ratio(),
             self._fetch_corporate_debt()
         ]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Unpack results
+
         (yield_curve_data, m2_data, hy_spreads_data, lei_data, sahm_data,
-         dxy_data, abi_data, copper_data, luxury_data, gold_ratio_data,
-         corp_debt_data) = results
+         dxy_data, abi_data, corp_debt_data) = await asyncio.gather(*fred_tasks, return_exceptions=True)
+
+        # Fetch Alpha Vantage-backed metrics sequentially to respect rate limits
+        copper_data = await self._fetch_copper()
+        await asyncio.sleep(15)  # Respect free-tier pacing
+        luxury_data = await self._fetch_luxury_sales()
+        await asyncio.sleep(15)
+        gold_ratio_data = await self._fetch_gold_ratio()
         
         # Calculate individual scores
         scores = {
@@ -82,7 +82,7 @@ class AlternativeMetricsAnalyzer:
             "leading_economic_index": self._score_lei(lei_data),
             "sahm_rule": self._score_sahm(sahm_data),
             "dollar_index": self._score_dollar(dxy_data),
-            "architecture_billings": self._score_abi(abi_data),
+            "building_permits": self._score_building_permits(abi_data),
             "copper_prices": self._score_copper(copper_data),
             "luxury_sales": self._score_luxury(luxury_data),
             "gold_treasury_ratio": self._score_gold_ratio(gold_ratio_data),
@@ -102,7 +102,7 @@ class AlternativeMetricsAnalyzer:
                 "lei": lei_data,
                 "sahm_rule": sahm_data,
                 "dollar_index": dxy_data,
-                "abi": abi_data,
+                "abi": abi_data,  # Now building permits
                 "copper": copper_data,
                 "luxury_sales": luxury_data,
                 "gold_ratio": gold_ratio_data,
@@ -112,48 +112,96 @@ class AlternativeMetricsAnalyzer:
         }
     
     async def _fetch_fred_data(self, series_id: str, name: str) -> Dict[str, Any]:
-        """Fetch data from FRED API"""
+        """Fetch data from FRED API with a single retry for transient issues"""
+        url = (
+            f"https://api.stlouisfed.org/fred/series/observations?"
+            f"series_id={series_id}&"
+            f"api_key={self.fred_api_key}&"
+            f"file_type=json&"
+            f"sort_order=desc&"
+            f"limit=24"
+        )
+        last_err = None
+        for attempt in range(2):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            observations = data.get("observations", [])
+                            valid_obs = [obs for obs in observations if obs["value"] != "."]
+                            if not valid_obs:
+                                raise ValueError(f"No valid data for {series_id}")
+                            current = float(valid_obs[0]["value"])
+                            previous = float(valid_obs[1]["value"]) if len(valid_obs) > 1 else current
+                            year_ago = float(valid_obs[12]["value"]) if len(valid_obs) > 12 else current
+                            return {
+                                "name": name,
+                                "current": current,
+                                "previous": previous,
+                                "year_ago": year_ago,
+                                "mom_change": current - previous,
+                                "yoy_change": current - year_ago,
+                                "yoy_change_pct": ((current - year_ago) / year_ago * 100) if year_ago != 0 else 0,
+                                "date": valid_obs[0]["date"],
+                                "trend": "increasing" if current > previous else "decreasing" if current < previous else "stable"
+                            }
+                        last_err = RuntimeError(f"FRED API error: {response.status}")
+            except Exception as e:
+                last_err = e
+            await asyncio.sleep(1)
+        print(f"[Alternative Metrics] Error fetching {series_id}: {last_err}")
+        raise last_err
+
+    async def _fetch_fred_candidates(self, series_ids: List[str], name: str) -> Dict[str, Any]:
+        """Try multiple FRED series IDs until one succeeds."""
+        last_err = None
+        for sid in series_ids:
+            try:
+                return await self._fetch_fred_data(sid, name)
+            except Exception as e:
+                last_err = e
+                continue
+        # Fallback: try FRED series search by name
+        search_id = await self._search_fred_series(name)
+        if search_id:
+            try:
+                return await self._fetch_fred_data(search_id, name)
+            except Exception as e:
+                last_err = e
+        # Graceful fallback: return unavailable placeholder without raising
+        return {"name": name, "unavailable": True, "error": str(last_err) if last_err else "Series not found"}
+
+    async def _search_fred_series(self, search_text: str) -> str | None:
+        """Search FRED for a series ID by text and return the best match."""
+        url = (
+            f"https://api.stlouisfed.org/fred/series/search?"
+            f"search_text={search_text}&"
+            f"api_key={self.fred_api_key}&"
+            f"file_type=json"
+        )
         try:
-            url = (
-                f"https://api.stlouisfed.org/fred/series/observations?"
-                f"series_id={series_id}&"
-                f"api_key={self.fred_api_key}&"
-                f"file_type=json&"
-                f"sort_order=desc&"
-                f"limit=24"
-            )
-            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
                     if response.status == 200:
                         data = await response.json()
-                        observations = data.get("observations", [])
-                        
-                        valid_obs = [obs for obs in observations if obs["value"] != "."]
-                        
-                        if not valid_obs:
-                            raise ValueError(f"No valid data for {series_id}")
-                        
-                        current = float(valid_obs[0]["value"])
-                        previous = float(valid_obs[1]["value"]) if len(valid_obs) > 1 else current
-                        year_ago = float(valid_obs[12]["value"]) if len(valid_obs) > 12 else current
-                        
-                        return {
-                            "name": name,
-                            "current": current,
-                            "previous": previous,
-                            "year_ago": year_ago,
-                            "mom_change": current - previous,
-                            "yoy_change": current - year_ago,
-                            "yoy_change_pct": ((current - year_ago) / year_ago * 100) if year_ago != 0 else 0,
-                            "date": valid_obs[0]["date"],
-                            "trend": "increasing" if current > previous else "decreasing" if current < previous else "stable"
-                        }
-                    else:
-                        raise RuntimeError(f"FRED API error: {response.status}")
-        except Exception as e:
-            print(f"[Alternative Metrics] Error fetching {series_id}: {e}")
-            raise
+                        series = data.get("seriess", [])
+                        # Prefer monthly frequency and titles containing key words
+                        def score(item):
+                            title = item.get("title", "").lower()
+                            freq = item.get("frequency_short", "").lower()
+                            s = 0
+                            if "architecture billings" in title or "abi" in title:
+                                s += 3
+                            if freq == "m":
+                                s += 1
+                            return s
+                        if series:
+                            best = sorted(series, key=score, reverse=True)[0]
+                            return best.get("id")
+        except Exception:
+            return None
+        return None
     
     async def _fetch_yield_curve(self) -> Dict[str, Any]:
         """
@@ -229,135 +277,131 @@ class AlternativeMetricsAnalyzer:
     
     async def _fetch_abi(self) -> Dict[str, Any]:
         """
-        Fetch Architecture Billings Index
-        Leading indicator for construction (9-12 months ahead)
-        Above 50 = expansion
+        Fetch Building Permits (ABI alternative)
+        Leading indicator for construction (6-9 months ahead)
+        Rising permits = economic expansion
         """
-        return await self._fetch_fred_data("ARCHBI", "Architecture Billings Index")
+        # Building permits are a reliable leading indicator for construction
+        return await self._fetch_fred_data("PERMIT", "Building Permits")
     
     async def _fetch_copper(self) -> Dict[str, Any]:
-        """
-        Fetch Copper Prices (Dr. Copper as economic health indicator)
-        """
-        try:
-            # Use Alpha Vantage for copper futures or proxy
-            url = (
-                f"https://www.alphavantage.co/query?"
-                f"function=TIME_SERIES_DAILY&"
-                f"symbol=CPER&"  # Copper ETF as proxy
-                f"apikey={self.alpha_vantage_key}"
-            )
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        daily_data = data.get("Time Series (Daily)", {})
-                        
-                        if not daily_data:
-                            raise ValueError("No copper data available")
-                        
-                        dates = sorted(daily_data.keys(), reverse=True)
-                        current_price = float(daily_data[dates[0]]["4. close"])
-                        month_ago = float(daily_data[dates[21]]["4. close"]) if len(dates) > 21 else current_price
-                        three_month = float(daily_data[dates[63]]["4. close"]) if len(dates) > 63 else current_price
-                        
-                        return {
-                            "name": "Copper Prices",
-                            "current": current_price,
-                            "1m_change_pct": ((current_price - month_ago) / month_ago * 100),
-                            "3m_change_pct": ((current_price - three_month) / three_month * 100),
-                            "trend": "increasing" if current_price > month_ago else "decreasing",
-                            "date": dates[0]
-                        }
-                    else:
-                        raise RuntimeError(f"Alpha Vantage API error: {response.status}")
-        except Exception as e:
-            print(f"[Alternative Metrics] Error fetching copper: {e}")
-            raise
+        """Fetch Copper Prices (Alpha Vantage) with rate-limit retry"""
+        url = (
+            f"https://www.alphavantage.co/query?"
+            f"function=TIME_SERIES_DAILY&"
+            f"symbol=CPER&"
+            f"apikey={self.alpha_vantage_key}"
+        )
+        last_err = None
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            daily_data = data.get("Time Series (Daily)", {})
+                            if not daily_data:
+                                raise ValueError("No copper data available")
+                            dates = sorted(daily_data.keys(), reverse=True)
+                            current_price = float(daily_data[dates[0]]["4. close"])
+                            month_ago = float(daily_data[dates[21]]["4. close"]) if len(dates) > 21 else current_price
+                            three_month = float(daily_data[dates[63]]["4. close"]) if len(dates) > 63 else current_price
+                            return {
+                                "name": "Copper Prices",
+                                "current": current_price,
+                                "1m_change_pct": ((current_price - month_ago) / month_ago * 100),
+                                "3m_change_pct": ((current_price - three_month) / three_month * 100),
+                                "trend": "increasing" if current_price > month_ago else "decreasing",
+                                "date": dates[0]
+                            }
+                        if response.status == 429:
+                            last_err = RuntimeError("Alpha Vantage rate limit hit (429)")
+                            await asyncio.sleep(15)
+                            continue
+                        last_err = RuntimeError(f"Alpha Vantage API error: {response.status}")
+            except Exception as e:
+                last_err = e
+            await asyncio.sleep(2)
+        print(f"[Alternative Metrics] Error fetching copper: {last_err}")
+        raise last_err
     
     async def _fetch_luxury_sales(self) -> Dict[str, Any]:
-        """
-        Fetch luxury goods sales proxy (high-end retail)
-        Using LVMH or luxury retail index as proxy
-        """
-        try:
-            # Use luxury retail ETF as proxy
-            url = (
-                f"https://www.alphavantage.co/query?"
-                f"function=TIME_SERIES_DAILY&"
-                f"symbol=RL&"  # Ralph Lauren as luxury proxy
-                f"apikey={self.alpha_vantage_key}"
-            )
-            
-            await asyncio.sleep(13)  # Rate limiting
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        daily_data = data.get("Time Series (Daily)", {})
-                        
-                        if not daily_data:
-                            raise ValueError("No luxury sales data available")
-                        
-                        dates = sorted(daily_data.keys(), reverse=True)
-                        current_price = float(daily_data[dates[0]]["4. close"])
-                        three_month = float(daily_data[dates[63]]["4. close"]) if len(dates) > 63 else current_price
-                        
-                        return {
-                            "name": "Luxury Sales Indicator",
-                            "current": current_price,
-                            "3m_change_pct": ((current_price - three_month) / three_month * 100),
-                            "trend": "increasing" if current_price > three_month else "decreasing",
-                            "date": dates[0]
-                        }
-                    else:
-                        raise RuntimeError(f"Alpha Vantage API error: {response.status}")
-        except Exception as e:
-            print(f"[Alternative Metrics] Error fetching luxury sales: {e}")
-            raise
+        """Fetch luxury goods proxy (Alpha Vantage) with rate-limit retry"""
+        url = (
+            f"https://www.alphavantage.co/query?"
+            f"function=TIME_SERIES_DAILY&"
+            f"symbol=RL&"
+            f"apikey={self.alpha_vantage_key}"
+        )
+        last_err = None
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            daily_data = data.get("Time Series (Daily)", {})
+                            if not daily_data:
+                                raise ValueError("No luxury sales data available")
+                            dates = sorted(daily_data.keys(), reverse=True)
+                            current_price = float(daily_data[dates[0]]["4. close"])
+                            three_month = float(daily_data[dates[63]]["4. close"]) if len(dates) > 63 else current_price
+                            return {
+                                "name": "Luxury Sales Indicator",
+                                "current": current_price,
+                                "3m_change_pct": ((current_price - three_month) / three_month * 100),
+                                "trend": "increasing" if current_price > three_month else "decreasing",
+                                "date": dates[0]
+                            }
+                        if response.status == 429:
+                            last_err = RuntimeError("Alpha Vantage rate limit hit (429)")
+                            await asyncio.sleep(15)
+                            continue
+                        last_err = RuntimeError(f"Alpha Vantage API error: {response.status}")
+            except Exception as e:
+                last_err = e
+            await asyncio.sleep(2)
+        print(f"[Alternative Metrics] Error fetching luxury sales: {last_err}")
+        raise last_err
     
     async def _fetch_gold_ratio(self) -> Dict[str, Any]:
-        """
-        Fetch Gold to Treasury ratio (fear indicator)
-        Rising = risk-off sentiment
-        """
-        try:
-            url = (
-                f"https://www.alphavantage.co/query?"
-                f"function=TIME_SERIES_DAILY&"
-                f"symbol=GLD&"  # Gold ETF
-                f"apikey={self.alpha_vantage_key}"
-            )
-            
-            await asyncio.sleep(13)  # Rate limiting
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        daily_data = data.get("Time Series (Daily)", {})
-                        
-                        if not daily_data:
-                            raise ValueError("No gold data available")
-                        
-                        dates = sorted(daily_data.keys(), reverse=True)
-                        current_price = float(daily_data[dates[0]]["4. close"])
-                        month_ago = float(daily_data[dates[21]]["4. close"]) if len(dates) > 21 else current_price
-                        
-                        return {
-                            "name": "Gold Price Trend",
-                            "current": current_price,
-                            "1m_change_pct": ((current_price - month_ago) / month_ago * 100),
-                            "trend": "increasing" if current_price > month_ago else "decreasing",
-                            "date": dates[0]
-                        }
-                    else:
-                        raise RuntimeError(f"Alpha Vantage API error: {response.status}")
-        except Exception as e:
-            print(f"[Alternative Metrics] Error fetching gold: {e}")
-            raise
+        """Fetch Gold trend (Alpha Vantage) with rate-limit retry"""
+        url = (
+            f"https://www.alphavantage.co/query?"
+            f"function=TIME_SERIES_DAILY&"
+            f"symbol=GLD&"
+            f"apikey={self.alpha_vantage_key}"
+        )
+        last_err = None
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            daily_data = data.get("Time Series (Daily)", {})
+                            if not daily_data:
+                                raise ValueError("No gold data available")
+                            dates = sorted(daily_data.keys(), reverse=True)
+                            current_price = float(daily_data[dates[0]]["4. close"])
+                            month_ago = float(daily_data[dates[21]]["4. close"]) if len(dates) > 21 else current_price
+                            return {
+                                "name": "Gold Price Trend",
+                                "current": current_price,
+                                "1m_change_pct": ((current_price - month_ago) / month_ago * 100),
+                                "trend": "increasing" if current_price > month_ago else "decreasing",
+                                "date": dates[0]
+                            }
+                        if response.status == 429:
+                            last_err = RuntimeError("Alpha Vantage rate limit hit (429)")
+                            await asyncio.sleep(15)
+                            continue
+                        last_err = RuntimeError(f"Alpha Vantage API error: {response.status}")
+            except Exception as e:
+                last_err = e
+            await asyncio.sleep(2)
+        print(f"[Alternative Metrics] Error fetching gold: {last_err}")
+        raise last_err
     
     async def _fetch_corporate_debt(self) -> Dict[str, Any]:
         """Fetch Corporate Debt to GDP ratio"""
@@ -542,6 +586,32 @@ class AlternativeMetricsAnalyzer:
             "data": data
         }
     
+    def _score_building_permits(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Score Building Permits
+        - Strong growth (>10% YoY): Strong expansion (70-100)
+        - Moderate growth (0-10%): Expansion (50-70)
+        - Decline (<0%): Contraction (0-50)
+        """
+        if isinstance(data, Exception):
+            return {"score": 50, "reasoning": "Data unavailable", "error": str(data)}
+        
+        yoy_change = data.get("yoy_change_pct", 0)
+        current = data.get("current", 0)
+        
+        if yoy_change > 10:
+            score = 70 + min(30, (yoy_change - 10) * 3)
+        elif yoy_change > 0:
+            score = 50 + yoy_change * 2
+        else:
+            score = max(10, 50 + yoy_change * 2.5)
+        
+        return {
+            "score": round(score, 1),
+            "reasoning": f"Building permits {yoy_change:+.1f}% YoY ({'expansion' if yoy_change >= 0 else 'contraction'})",
+            "data": data
+        }
+    
     def _score_abi(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Score Architecture Billings Index
@@ -550,8 +620,8 @@ class AlternativeMetricsAnalyzer:
         - 48-50: Neutral (45-55)
         - <48: Contraction (0-45)
         """
-        if isinstance(data, Exception):
-            return {"score": 50, "reasoning": "Data unavailable", "error": str(data)}
+        if isinstance(data, Exception) or data.get("unavailable"):
+            return {"score": 50, "reasoning": "ABI data unavailable", "data": data}
         
         abi = data.get("current", 50)
         

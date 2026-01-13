@@ -50,40 +50,8 @@ class MacroAgent(BaseAgent):
             "macro_weights_config.json"
         )
         
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            self.log(f"Error loading weights config: {e}. Using defaults.", "WARNING")
-            # Return default weights if config file not found
-            return {
-                "popular_metrics": {
-                    "total_weight_in_final_score": 0.60,
-                    "individual_weights": {
-                        "gdp_growth": 0.15, "unemployment": 0.12, "cpi_inflation": 0.12,
-                        "ppi_inflation": 0.08, "fed_funds_rate": 0.12, "treasury_10y": 0.10,
-                        "sp500_performance": 0.10, "ism_manufacturing": 0.08,
-                        "ism_services": 0.08, "retail_sales": 0.05, "consumer_confidence": 0.05
-                    }
-                },
-                "alternative_metrics": {
-                    "total_weight_in_final_score": 0.40,
-                    "individual_weights": {
-                        "yield_curve": 0.15, "m2_growth": 0.08, "high_yield_spreads": 0.12,
-                        "leading_economic_index": 0.12, "sahm_rule": 0.10, "dollar_index": 0.08,
-                        "architecture_billings": 0.06, "copper_prices": 0.10, "luxury_sales": 0.06,
-                        "gold_treasury_ratio": 0.08, "corporate_debt_gdp": 0.05
-                    }
-                },
-                "scoring_thresholds": {
-                    "very_bullish": 70, "bullish": 60, "neutral_high": 55,
-                    "neutral_low": 45, "bearish": 40, "very_bearish": 30
-                },
-                "confidence_adjustments": {
-                    "high_agreement_bonus": 5, "low_agreement_penalty": -5,
-                    "agreement_threshold": 10
-                }
-            }
+        with open(config_path, 'r') as f:
+            return json.load(f)
     
     async def analyze(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """

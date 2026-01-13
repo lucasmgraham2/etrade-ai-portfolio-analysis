@@ -81,7 +81,7 @@ class SectorAgent(BaseAgent):
         # Generate insights
         insights = self._generate_insights(predictions, allocation_analysis)
         
-        return {
+        results = {
             "summary": self._create_summary(predictions, allocation_analysis),
             "sector_predictions": predictions,
             "sector_performance": sector_performance,
@@ -92,6 +92,12 @@ class SectorAgent(BaseAgent):
             "recommendations": self._generate_recommendations(predictions, allocation_analysis),
             "timestamp": datetime.now().isoformat()
         }
+        
+        # Generate AI reasoning
+        ai_reasoning = await self._generate_sector_ai_reasoning(results, predictions)
+        results["ai_reasoning"] = ai_reasoning
+        
+        return results
     
     async def _map_symbols_to_sectors(
         self, symbols: List[str], portfolio: Dict[str, Any]
@@ -495,8 +501,30 @@ class SectorAgent(BaseAgent):
         top_3_names = ", ".join([f"{p['sector']} ({p['prediction_score']:.1f})" for p in top_3])
         
         return (
-            f"Sector analysis predicts {outperform_count} sectors to outperform and "
-            f"{underperform_count} to underperform. Top 3 predicted sectors: {top_3_names}. "
-            f"Portfolio spread across {allocation['total_positions']} positions in "
-            f"{len(allocation['sector_counts'])} sectors."
+            f"Sector rotation analysis: {outperform_count} sectors predicted to outperform, "
+            f"{underperform_count} to underperform. Top 3 favorable: {top_3_names}."
         )
+    
+    async def _generate_sector_ai_reasoning(self, results: Dict[str, Any], predictions: List[Dict[str, Any]]) -> str:
+        """Generate AI reasoning for sector analysis results"""
+        
+        top_3 = predictions[:3]
+        bottom_3 = predictions[-3:]
+        
+        prompt = f"""Analyze this sector rotation assessment and provide concise investment insights.
+
+Top 3 Favorable Sectors:
+{json.dumps([{'sector': p['sector'], 'score': p['prediction_score'], 'outlook': p.get('outlook', 'neutral')} for p in top_3], indent=2)}
+
+Bottom 3 Unfavorable Sectors:
+{json.dumps([{'sector': p['sector'], 'score': p['prediction_score'], 'outlook': p.get('outlook', 'neutral')} for p in bottom_3], indent=2)}
+
+Provide:
+1. What this sector rotation signals about market conditions
+2. Investment themes or trends driving these shifts
+3. Tactical sector allocation advice
+4. Key timing or execution considerations
+
+Be concise (3-4 sentences max)."""
+        
+        return await self.generate_ai_reasoning(results, prompt)

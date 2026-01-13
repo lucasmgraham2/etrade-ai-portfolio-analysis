@@ -5,6 +5,7 @@ Combines all agent outputs with portfolio data to generate actionable recommenda
 
 from typing import Dict, Any, List
 from datetime import datetime
+import json
 from .base_agent import BaseAgent
 
 
@@ -85,7 +86,7 @@ class IntegratorAgent(BaseAgent):
             macro_results, sentiment_results, sector_results
         )
         
-        return {
+        results = {
             "summary": executive_summary,
             "position_analyses": position_analyses,
             "portfolio_recommendations": portfolio_recommendations,
@@ -95,6 +96,14 @@ class IntegratorAgent(BaseAgent):
             "recommendations": self._format_recommendations(action_priorities),
             "timestamp": datetime.now().isoformat()
         }
+        
+        # Generate AI reasoning
+        ai_reasoning = await self._generate_integrator_ai_reasoning(
+            results, position_analyses, macro_results, sentiment_results, sector_results
+        )
+        results["ai_reasoning"] = ai_reasoning
+        
+        return results
     
     def _extract_positions(self, portfolio: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract all positions from portfolio"""
@@ -796,3 +805,44 @@ class IntegratorAgent(BaseAgent):
             recommendations.append(rec_text)
         
         return recommendations
+    
+    async def _generate_integrator_ai_reasoning(
+        self,
+        results: Dict[str, Any],
+        position_analyses: List[Dict[str, Any]],
+        macro: Dict[str, Any],
+        sentiment: Dict[str, Any],
+        sector: Dict[str, Any]
+    ) -> str:
+        """Generate AI reasoning for integrated portfolio recommendations"""
+        
+        # Extract key metrics
+        buys = [p['symbol'] for p in position_analyses if p.get('recommendation') == 'BUY'][:3]
+        sells = [p['symbol'] for p in position_analyses if p.get('recommendation') in ['SELL', 'CUT_LOSS']][:3]
+        holds = [p['symbol'] for p in position_analyses if p.get('recommendation') == 'HOLD'][:3]
+        
+        macro_score = macro.get('confidence_score', {}).get('score', 50)
+        risk_level = results.get('risk_assessment', {}).get('overall_risk', 'MEDIUM')
+        
+        prompt = f"""Synthesize this multi-agent portfolio analysis into actionable investment guidance.
+
+Macro Score: {macro_score}/100
+Risk Level: {risk_level}
+
+Position Recommendations:
+- Buy candidates: {', '.join(buys) if buys else 'none'}
+- Hold positions: {', '.join(holds) if holds else 'none'}  
+- Sell candidates: {', '.join(sells) if sells else 'none'}
+
+Top Action Priorities:
+{json.dumps(results.get('action_priorities', [])[:3], indent=2)}
+
+Provide:
+1. Overall portfolio positioning assessment
+2. How sentiment + macro + sector signals align or conflict
+3. Top 2-3 specific actions to take now
+4. Key risk factors to monitor
+
+Be concise (4-5 sentences max)."""
+        
+        return await self.generate_ai_reasoning(results, prompt)

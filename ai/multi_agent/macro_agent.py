@@ -384,7 +384,7 @@ class MacroAgent(BaseAgent):
                 if 'current' in raw:
                     insights.append(f"│    • Current Value: {raw['current']:.2f}")
                 if 'inverted' in raw:
-                    insights.append(f"│    • Yield Curve: {'INVERTED ⚠' if raw['inverted'] else 'Normal ✓'}")
+                    insights.append(f"│    • Yield Curve: {'INVERTED [WARNING]' if raw['inverted'] else 'Normal [OK]'}")
                 if '10y_yield' in raw and '2y_yield' in raw:
                     insights.append(f"│    • 10Y Yield: {raw['10y_yield']:.2f}% | 2Y Yield: {raw['2y_yield']:.2f}%")
                 if 'yoy_change_pct' in raw:
@@ -424,7 +424,7 @@ class MacroAgent(BaseAgent):
         insights.append("")
         
         # Key risk factors
-        insights.append(f"⚠ CRITICAL RISK FACTORS (Score < 40):")
+        insights.append(f"[WARNING] CRITICAL RISK FACTORS (Score < 40):")
         risk_factors = [item for item in all_scores if item["score"] < 40]
         
         if risk_factors:
@@ -432,12 +432,12 @@ class MacroAgent(BaseAgent):
                 insights.append(f"  • {item['metric'].replace('_', ' ').title()}: {item['score']:.1f}/100")
                 insights.append(f"    └─ {item['reasoning']}")
         else:
-            insights.append("  ✓ No critical risk factors identified (all metrics above 40)")
+            insights.append("  [OK] No critical risk factors identified (all metrics above 40)")
         
         insights.append("")
         
         # Positive catalysts
-        insights.append(f"✓ STRONG POSITIVE CATALYSTS (Score ≥ 70):")
+        insights.append(f"[OK] STRONG POSITIVE CATALYSTS (Score ≥ 70):")
         catalysts = [item for item in all_scores if item["score"] >= 70]
         
         if catalysts:
@@ -506,13 +506,13 @@ class MacroAgent(BaseAgent):
         
         # Adjust for agreement level
         if agreement == "low":
-            recommendations.append("⚠ LOW AGREEMENT WARNING:")
+            recommendations.append("[WARNING] LOW AGREEMENT WARNING:")
             recommendations.append("  • Popular and alternative metrics diverging")
             recommendations.append("  • Consider smaller position sizes")
             recommendations.append("  • Increase diversification")
             recommendations.append("  • Monitor for resolution of divergence")
         elif agreement == "high":
-            recommendations.append("✓ HIGH AGREEMENT CONFIRMATION:")
+            recommendations.append("[OK] HIGH AGREEMENT CONFIRMATION:")
             recommendations.append("  • Both metric sets aligned")
             recommendations.append("  • Higher confidence in directional view")
             recommendations.append("  • Can size positions more aggressively")

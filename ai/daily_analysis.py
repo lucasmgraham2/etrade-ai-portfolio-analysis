@@ -27,7 +27,7 @@ def main():
     response = input("Continue with analysis? (y/n): ").strip().lower()
     
     if response != 'y':
-        print("\n❌ Analysis cancelled\n")
+        print("\n[CANCELLED] Analysis cancelled\n")
         return
     
     # Get root directory
@@ -41,9 +41,9 @@ def main():
     etrade_script = os.path.join(root_dir, "etrade", "get_all_data.py")
     try:
         subprocess.run([sys.executable, etrade_script], cwd=root_dir, check=True)
-        print("\n✓ Portfolio data fetched successfully\n")
+        print("\n[OK] Portfolio data fetched successfully\n")
     except subprocess.CalledProcessError as e:
-        print(f"\n✗ Failed to fetch portfolio data: {e}\n")
+        print(f"\n[ERROR] Failed to fetch portfolio data: {e}\n")
         return
     
     # Step 2: Run Multi-Agent AI analysis
@@ -54,16 +54,16 @@ def main():
     ai_script = os.path.join(root_dir, "ai", "run_multi_agent.py")
     try:
         subprocess.run([sys.executable, ai_script], cwd=os.path.join(root_dir, "ai"), check=True)
-        print("\n✓ Multi-agent AI analysis completed\n")
+        print("\n[OK] Multi-agent AI analysis completed\n")
     except subprocess.CalledProcessError as e:
-        print(f"\n✗ Multi-agent AI analysis failed: {e}\n")
+        print(f"\n[ERROR] Multi-agent AI analysis failed: {e}\n")
         return
     
     print("="*80)
     print(" DAILY ANALYSIS COMPLETE!")
     print("="*80 + "\n")
-    print("✅ Your daily portfolio analysis is ready!")
-    print("📁 View reports in ai/analysis_reports/\n")
+    print("[SUCCESS] Your daily portfolio analysis is ready!")
+    print("[FILES] View reports in ai/analysis_reports/\n")
 
 if __name__ == "__main__":
     main()

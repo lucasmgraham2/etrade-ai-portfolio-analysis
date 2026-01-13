@@ -33,7 +33,8 @@ class AgentOrchestrator:
             agent: Agent instance to register
         """
         self.agents.append(agent)
-        print(f"✓ Registered agent: {agent.name}")
+        self.execution_order.append(agent.name)
+        print(f"Registered agent: {agent.name}")
         
     async def run_sequential(self) -> Dict[str, Any]:
         """
@@ -64,7 +65,7 @@ class AgentOrchestrator:
         total_time = (end_time - start_time).total_seconds()
         
         print("\n" + "="*60)
-        print(f"✓ Analysis Complete ({total_time:.2f}s)")
+        print(f"Analysis Complete ({total_time:.2f}s)")
         print("="*60 + "\n")
         
         return self._compile_results(total_time)
@@ -81,7 +82,7 @@ class AgentOrchestrator:
             Combined results from all agents
         """
         print("\n" + "="*60)
-        print("🚀 Starting Multi-Agent Portfolio Analysis (Parallel Mode)")
+        print("Starting Multi-Agent Portfolio Analysis (Parallel Mode)")
         print("="*60 + "\n")
         
         start_time = datetime.now()
@@ -113,7 +114,7 @@ class AgentOrchestrator:
         total_time = (end_time - start_time).total_seconds()
         
         print("\n" + "="*60)
-        print(f"✓ Analysis Complete ({total_time:.2f}s)")
+        print(f"Analysis Complete ({total_time:.2f}s)")
         print("="*60 + "\n")
         
         return self._compile_results(total_time)
@@ -168,7 +169,7 @@ class AgentOrchestrator:
         with open(filepath, 'w') as f:
             json.dump(self.results, f, indent=2)
             
-        print(f"✓ Results saved to: {filepath}")
+        print(f"Results saved to: {filepath}")
         
     def generate_report(self) -> str:
         """
@@ -211,6 +212,12 @@ class AgentOrchestrator:
                 results = agent_result['results']
                 if 'summary' in results and agent_name != "Integrator":
                     report_lines.append(f"\n{results['summary']}")
+                
+                # Add AI reasoning if available
+                if 'ai_reasoning' in results and results['ai_reasoning']:
+                    report_lines.append("\nAI Analysis:")
+                    report_lines.append(f"  {results['ai_reasoning']}")
+                
                 if 'recommendations' in results:
                     report_lines.append("\nRecommendations:")
                     for rec in results['recommendations']:

@@ -20,7 +20,7 @@ def list_analyses():
     text_reports.sort(reverse=True)
     
     print("\n" + "="*80)
-    print(" 📊 SAVED MULTI-AGENT ANALYSIS REPORTS")
+    print(" SAVED MULTI-AGENT ANALYSIS REPORTS")
     print("="*80 + "\n")
     
     for i, filepath in enumerate(text_reports, 1):

@@ -7,6 +7,7 @@ from typing import Dict, Any, List
 from datetime import datetime, timedelta
 import asyncio
 import aiohttp
+import json
 from .base_agent import BaseAgent
 
 # NLP for sentiment analysis
@@ -101,7 +102,7 @@ class SentimentAgent(BaseAgent):
         # Generate insights
         insights = self._generate_insights(overall_sentiment)
         
-        return {
+        results = {
             "summary": self._create_summary(overall_sentiment),
             "overall_sentiment": overall_sentiment,
             "news_sentiment": news_sentiment,
@@ -110,6 +111,12 @@ class SentimentAgent(BaseAgent):
             "data_sources": ["news"],
             "analysis_period_days": self.lookback_days
         }
+        
+        # Generate AI reasoning
+        ai_reasoning = await self._generate_sentiment_ai_reasoning(results, symbols)
+        results["ai_reasoning"] = ai_reasoning
+        
+        return results
     
     async def _analyze_news_sentiment(self, symbols: List[str]) -> Dict[str, Any]:
         """
@@ -917,6 +924,32 @@ REASONING: [brief explanation]"""
             }
             
         except Exception as e:
-            self.log(f"AI analysis failed: {str(e)}, falling back to keyword matching", "WARNING")
-            # Fallback to simple keyword matching
+            self.log(f"AI sentiment analysis failed: {str(e)}", "ERROR")
             return {"score": 0, "label": "neutral", "count": len(articles)}
+    
+    async def _generate_sentiment_ai_reasoning(self, results: Dict[str, Any], symbols: List[str]) -> str:
+        """Generate AI reasoning for sentiment analysis results"""
+        
+        # Extract key metrics
+        overall = results.get("overall_sentiment", {})
+        bullish = [s for s, d in overall.items() if d.get("sentiment") == "bullish"]
+        bearish = [s for s, d in overall.items() if d.get("sentiment") == "bearish"]
+        
+        prompt = f"""Analyze this portfolio sentiment data and provide concise investment insights.
+
+Portfolio: {len(symbols)} positions
+Bullish signals: {', '.join(bullish) if bullish else 'none'}
+Bearish signals: {', '.join(bearish) if bearish else 'none'}
+
+Top sentiment scores:
+{json.dumps({s: {'score': d.get('overall_score'), 'sentiment': d.get('sentiment')} for s, d in list(overall.items())[:5]}, indent=2)}
+
+Provide:
+1. What the sentiment tells us about market perception
+2. Which positions warrant attention and why
+3. Key risks or opportunities
+4. Actionable takeaway
+
+Be concise (3-4 sentences max)."""
+        
+        return await self.generate_ai_reasoning(results, prompt)

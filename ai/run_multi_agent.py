@@ -43,7 +43,7 @@ def load_portfolio_data(filepath: str = None) -> dict:
         
         filepath = max(json_candidates, key=os.path.getmtime)
         chosen_dir = Path(filepath).parent
-        print(f"📂 Loading portfolio data from: {chosen_dir.name}/{Path(filepath).name}")
+        print(f"Loading portfolio data from: {chosen_dir.name}/{Path(filepath).name}")
     
     with open(filepath, 'r') as f:
         return json.load(f)
@@ -101,11 +101,11 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
     # Load portfolio data
     try:
         portfolio_data = load_portfolio_data(portfolio_filepath)
-        print(f"✓ Portfolio loaded: ${portfolio_data['summary']['total_portfolio_value']:,.2f}")
-        print(f"✓ Positions: {portfolio_data['summary']['total_positions']}")
-        print(f"✓ Symbols: {', '.join(portfolio_data['summary']['unique_symbols'])}")
+        print(f"Portfolio loaded: ${portfolio_data['summary']['total_portfolio_value']:,.2f}")
+        print(f"Positions: {portfolio_data['summary']['total_positions']}")
+        print(f"Symbols: {', '.join(portfolio_data['summary']['unique_symbols'])}")
     except Exception as e:
-        print(f"✗ Error loading portfolio: {str(e)}")
+        print(f"Error loading portfolio: {str(e)}")
         return
     
     # Load configuration
@@ -115,7 +115,7 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
     orchestrator = AgentOrchestrator(portfolio_data)
     
     # Register agents
-    print("\n📋 Registering agents...")
+    print("\nRegistering agents...")
     orchestrator.register_agent(SentimentAgent({**config.get("sentiment", {}), "api_keys": config.get("api_keys", {})}))
     orchestrator.register_agent(MacroAgent(config))
     orchestrator.register_agent(SectorAgent({**config.get("sector", {}), "api_keys": config.get("api_keys", {})}))
@@ -180,13 +180,13 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
         json_file = output_dir / f"multi_agent_analysis_{timestamp}.json"
         with open(json_file, 'w') as f:
             json.dump(_make_json_safe(results), f, indent=2)
-        print(f"✓ JSON results saved: {json_file.relative_to(Path(__file__).parent)}")
+        print(f"[OK] JSON results saved: {json_file.relative_to(Path(__file__).parent)}")
         
         # Save text report
         report_file = output_dir / f"multi_agent_report_{timestamp}.txt"
         with open(report_file, 'w', encoding='utf-8') as f:
             f.write(report)
-        print(f"✓ Text report saved: {report_file.relative_to(Path(__file__).parent)}")
+        print(f"[OK] Text report saved: {report_file.relative_to(Path(__file__).parent)}")
         
         # Print executive summary
         print("\n" + "="*80)
@@ -222,7 +222,7 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
         return results
         
     except Exception as e:
-        print(f"\n✗ Error during analysis: {str(e)}")
+        print(f"\nError during analysis: {str(e)}")
         import traceback
         traceback.print_exc()
         return None

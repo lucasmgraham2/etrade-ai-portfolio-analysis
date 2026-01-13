@@ -8,6 +8,12 @@ from typing import Dict, Any, List
 from datetime import datetime
 import json
 
+try:
+    from openai import AsyncOpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
 
 class BaseAgent(ABC):
     """Abstract base class for all portfolio analysis agents"""
@@ -26,6 +32,11 @@ class BaseAgent(ABC):
         self.execution_time = None
         self.status = "initialized"
         self.errors = []
+        
+        # Initialize OpenAI client for AI reasoning
+        self.openai_client = None
+        if OPENAI_AVAILABLE and self.config.get("api_keys", {}).get("openai"):
+            self.openai_client = AsyncOpenAI(api_key=self.config["api_keys"]["openai"])
         
     @abstractmethod
     async def analyze(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -54,16 +65,16 @@ class BaseAgent(ABC):
         self.status = "running"
         
         try:
-            print(f"🤖 {self.name} starting analysis...")
+            print(f"{self.name} starting analysis...")
             self.results = await self.analyze(context)
             self.status = "completed"
-            print(f"✓ {self.name} completed successfully")
+            print(f"{self.name} completed successfully")
             
         except Exception as e:
             self.status = "failed"
             error_msg = f"Error in {self.name}: {str(e)}"
             self.errors.append(error_msg)
-            print(f"✗ {self.name} failed: {str(e)}")
+            print(f"{self.name} failed: {str(e)}")
             self.results = {"error": str(e)}
             
         finally:
@@ -111,3 +122,33 @@ class BaseAgent(ABC):
             self.log(error_msg, "ERROR")
             return False
         return True
+    
+    async def generate_ai_reasoning(self, results: Dict[str, Any], prompt_template: str) -> str:
+        """
+        Generate AI reasoning for agent results using OpenAI
+        
+        Args:
+            results: Agent analysis results
+            prompt_template: Formatted prompt for this agent type
+            
+        Returns:
+            AI-generated reasoning text or empty string if unavailable
+        """
+        if not self.openai_client:
+            self.log("OpenAI not available for AI reasoning", "WARNING")
+            return ""
+        
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a financial analyst providing concise, actionable insights."},
+                    {"role": "user", "content": prompt_template}
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            self.log(f"Error generating AI reasoning: {str(e)}", "ERROR")
+            return ""

@@ -6,7 +6,7 @@ See the full documentation at [ai/multi_agent/README.md](multi_agent/README.md).
 
 ## Quick Start
 
-Use a virtual environment (recommended) and install AI deps plus NLP extras for transformer sentiment:
+Use a virtual environment and install AI deps plus NLP extras for transformer sentiment:
 ```bash
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -14,17 +14,18 @@ pip install -r ai/requirements.txt
 pip install transformers torch
 ```
 
-Run the multi-agent analysis:
+Run the multi-agent analysis from repo root or `ai/`:
 ```bash
-cd ai
-python run_multi_agent.py
+python ai/run_multi_agent.py
+# or
+cd ai && python run_multi_agent.py
 ```
 
 This will:
-- ✅ Load your latest E*TRADE portfolio data
-- ✅ Run Sentiment, Macro, Sector, and Integrator agents
-- ✅ Save JSON and text reports to `ai/analysis_reports/`
-- ✅ Print an executive summary with top actions
+- Load your latest E*TRADE portfolio data from `etrade/etrade_reports/`
+- Run Sentiment, Macro, Sector, and Integrator agents (parallel by default)
+- Save JSON and text reports to `ai/analysis_reports/`
+- Print an executive summary with top actions
 
 ## Viewing Saved Analyses
 

@@ -8,122 +8,85 @@ This system uses four specialized AI agents working together to provide actionab
 
 ### 🤖 Agent Architecture
 
-1. **Sentiment Agent** - Analyzes market mood and investor psychology
-   - Scans financial news (via NewsAPI, Alpha Vantage)
-   - Monitors social media sentiment (Twitter/X)
-   - Analyzes forum discussions (Reddit, StockTwits)
-   - Uses NLP and semantic search for comprehensive sentiment analysis
+1) **Sentiment Agent**
+   - NewsAPI + Alpha Vantage news with transformer NLP (keyword fallback if NLP unavailable)
+   - Daily caching + rate-limit lock for NewsAPI free tier
+   - Optional OpenAI backfill when transformer is inconclusive
 
-2. **Macro Agent** - Evaluates economic environment
-   - Tracks GDP growth and trends
-   - Monitors inflation rates (CPI, PPI)
-   - Analyzes interest rates (Federal Funds Rate)
-   - Assesses unemployment data
-   - Evaluates Treasury yields and market indices
-   - Calculates overall market favorability score (0-100)
+2) **Macro Agent**
+   - Popular + alternative macro metrics
+   - Macro confidence score (0–100) with bullish/bearish label
 
-3. **Sector Agent** - Predicts sector outperformance
-   - Analyzes 11 major market sectors
-   - Uses historical performance data
-   - Identifies sector rotation patterns
-   - Integrates economic cycle analysis
-   - Provides ML-based predictions for sector winners
+3) **Sector Agent**
+   - 11 sectors, cached daily performance; favors fast completion if cache exists
+   - Identifies favorable/unfavorable sectors and momentum
 
-4. **Integrator Agent** - Synthesizes insights into actions
-   - Combines outputs from all agents
-   - Generates position-specific recommendations (BUY/SELL/HOLD)
-   - Suggests portfolio rebalancing strategies
-   - Prioritizes actions by urgency and impact
-   - Assesses overall portfolio risk
+4) **Integrator Agent**
+   - Blends agent outputs into BUY/HOLD/SELL and top priority actions
+   - Summarizes risks and recommended sector tilts
 
 ### 🔄 How It Works
 
 ```
-Portfolio Data → [Sentiment] → 
-                 [Macro]     →  [Integrator] → Recommendations
-                 [Sector]    →
+Portfolio Data → [Sentiment] ↘
+                 [Macro]      → Integrator → Recommendations
+                 [Sector]    ↗
 ```
 
-The **Orchestrator** coordinates agent execution:
-- **Parallel Mode** (default): Sentiment, Macro, and Sector agents run simultaneously for speed
-- **Sequential Mode**: Agents run in order, passing context between them
+- **Parallel Mode** (default): Sentiment, Macro, and Sector run together, Integrator runs after.
+- **Sequential Mode** (flag): Run in series for debugging.
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.8+
-- Active E*TRADE portfolio data (from parent etrade module)
+- Python 3.10+ recommended
+- Fresh portfolio JSON from `etrade/get_all_data.py` (created by `run_complete_analysis.py`)
 
 ### Setup
 
-1. Install required packages:
+1) Install required packages (from repo root):
 
 ```bash
-cd ai
-pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r ai/requirements.txt
+pip install transformers torch  # NLP extras
 ```
 
-2. (Optional) Configure API keys for real-time data:
-
-Create a `.env` file in the project root:
+2) Configure API keys in `.env` at repo root:
 
 ```env
-# Financial Data
-ALPHA_VANTAGE_API_KEY=your_key_here
-NEWSAPI_KEY=your_key_here
-FRED_API_KEY=your_key_here
-
-# Social Media (optional)
-TWITTER_BEARER_TOKEN=your_token_here
+ALPHA_VANTAGE_API_KEY=...
+NEWSAPI_KEY=...
+FRED_API_KEY=...
+OPENAI_API_KEY=...  # optional
 ```
 
-**API Key Sources:**
-- [Alpha Vantage](https://www.alphavantage.co/support/#api-key) - Free tier: 5 calls/min, 500/day
-- [NewsAPI](https://newsapi.org/register) - Free tier: 100 requests/day
-- [FRED](https://fred.stlouisfed.org/docs/api/api_key.html) - Free with registration
-
-> **Note:** The system works without API keys using simulated data for development/testing.
+API key help: [API_KEYS_GUIDE.md](../../API_KEYS_GUIDE.md).
 
 ## Usage
 
 ### Basic Usage
 
-Run analysis with most recent portfolio data:
+Run analysis with latest portfolio data (root or ai/):
 
 ```bash
-python run_multi_agent.py
+python ai/run_multi_agent.py
+# or
+cd ai && python run_multi_agent.py
 ```
 
-### Advanced Usage
-
-Specify custom portfolio file:
-
-```bash
-python run_multi_agent.py --portfolio ../etrade_reports/etrade_data_20260111_120000.json
-```
-
-Run agents sequentially (useful for debugging):
-
-```bash
-python run_multi_agent.py --sequential
-```
+Flags (see `--help`):
+- `--portfolio <path>`: use a specific portfolio JSON (default: latest in etrade_reports)
+- `--sequential`: run agents in sequence
 
 ### Output
 
-The system generates two files:
+Outputs saved to `ai/analysis_reports/`:
 
-1. **JSON Results** (`multi_agent_analysis_YYYYMMDD_HHMMSS.json`)
-   - Complete raw data from all agents
-   - Detailed metrics and scores
-   - Machine-readable format
-
-2. **Text Report** (`multi_agent_report_YYYYMMDD_HHMMSS.txt`)
-   - Human-readable analysis
-   - Executive summary
-   - Top priority actions
-   - Risk assessment
-   - Agent-by-agent breakdown
+- `multi_agent_analysis_YYYYMMDD_HHMMSS.json` (machine-readable)
+- `multi_agent_report_YYYYMMDD_HHMMSS.txt` (human-readable)
 
 
 ## Configuration
@@ -151,80 +114,44 @@ config = {
 
 ### Base Agent Class
 
-All agents inherit from `BaseAgent` which provides:
-- Error handling and logging
-- Execution timing
-- Result formatting
-- Context validation
+Provides logging, timing, validation, and consistent result shape.
 
 ### Orchestrator
 
-The `AgentOrchestrator` manages:
-- Agent registration
-- Execution coordination (parallel/sequential)
-- Context passing between agents
-- Result compilation
-- Report generation
+- Registers agents
+- Runs in parallel groups or sequentially
+- Passes context and compiles results
+- Emits consolidated report content
 
 ### Data Flow
 
 ```python
-# 1. Load portfolio
-portfolio_data = load_portfolio_data()
-
-# 2. Create orchestrator
-orchestrator = AgentOrchestrator(portfolio_data)
-
-# 3. Register agents
 orchestrator.register_agent(SentimentAgent(config))
 orchestrator.register_agent(MacroAgent(config))
 orchestrator.register_agent(SectorAgent(config))
 orchestrator.register_agent(IntegratorAgent(config))
-
-# 4. Run analysis (parallel)
-results = await orchestrator.run_parallel([
-    ["Sentiment", "Macro", "Sector"],  # Run these in parallel
-    ["Integrator"]                      # Run this after
-])
-
-# 5. Generate report
+results = await orchestrator.run_parallel([["Sentiment", "Macro", "Sector"], ["Integrator"]])
 report = orchestrator.generate_report()
 ```
 
 ## Performance
 
-Typical execution times:
-
-- **Parallel Mode**: 3-8 seconds
-- **Sequential Mode**: 8-15 seconds
-- **With API calls**: 15-30 seconds (rate limiting)
+Typical execution (with cache + transformers downloaded):
+- Parallel: ~1–2 minutes if downloading models first time; faster on cache hits
+- Sequential: slower; use for debugging
 
 ## Troubleshooting
 
 ### No portfolio data found
-
-Ensure you've run the E*TRADE data collection first:
-
-```bash
-cd ../etrade
-python get_all_data.py
-```
+- Run `python etrade/get_all_data.py` (or `python run_complete_analysis.py`) to refresh portfolio JSON.
 
 ### API rate limiting
+- NewsAPI free tier: agent caches per day and stops after 429; use paid tier or accept partial coverage.
+- Alpha Vantage: 5 calls/min free; sector agent caches daily data to stay within limits.
 
-If using Alpha Vantage free tier (5 calls/min), the Sector Agent will automatically rate-limit. Consider:
-- Using simulated data for development
-- Upgrading to paid tier
-- Implementing caching for API responses
-
-### Import errors
-
-Make sure you're running from the `ai` directory:
-
-```bash
-cd ai
-python run_multi_agent.py
-```
+### Import/model download issues
+- Ensure venv is activated and deps installed.
+- First transformer download can be large; reruns use local cache.
 
 ## Future Enhancements
 

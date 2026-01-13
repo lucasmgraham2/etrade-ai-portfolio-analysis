@@ -291,6 +291,33 @@ class AgentOrchestrator:
                         report_lines.append(
                             f"  Sell/Trim: {', '.join(buckets.get('sell', [])[:8]) or 'none'}"
                         )
+                    
+                    # Add new position suggestions section
+                    new_positions = results.get('new_position_suggestions', {})
+                    if new_positions and new_positions.get('suggestions'):
+                        report_lines.append("\n" + "-"*80)
+                        report_lines.append("NEW POSITION SUGGESTIONS")
+                        report_lines.append("-"*80)
+                        
+                        based_on = new_positions.get('based_on', {})
+                        fav_sectors = based_on.get('favorable_sectors', [])
+                        macro_score = based_on.get('macro_score', 'N/A')
+                        risk_level = based_on.get('risk_level', 'N/A')
+                        
+                        report_lines.append(
+                            f"Based on favorable sectors ({', '.join(fav_sectors)}), "
+                            f"macro score ({macro_score}), and {risk_level} risk tolerance:\n"
+                        )
+                        
+                        for i, suggestion in enumerate(new_positions['suggestions'], 1):
+                            ticker = suggestion.get('ticker', 'N/A')
+                            name = suggestion.get('name', 'N/A')
+                            sector = suggestion.get('sector', 'N/A')
+                            rationale = suggestion.get('rationale', 'N/A')
+                            signal = suggestion.get('signal_strength', 'BUY')
+                            
+                            report_lines.append(f"{i}. {ticker} ({name}) - {sector} [{signal}]")
+                            report_lines.append(f"   Rationale: {rationale}\n")
             else:
                 report_lines.append(f"\nErrors: {', '.join(agent_result['errors'])}")
         

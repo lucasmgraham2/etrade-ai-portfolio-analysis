@@ -103,6 +103,12 @@ class IntegratorAgent(BaseAgent):
         )
         results["ai_reasoning"] = ai_reasoning
         
+        # Generate new position suggestions
+        new_position_suggestions = await self._suggest_new_positions(
+            portfolio, position_analyses, macro_results, sector_results, risk_assessment
+        )
+        results["new_position_suggestions"] = new_position_suggestions
+        
         return results
     
     def _extract_positions(self, portfolio: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -846,3 +852,104 @@ Provide:
 Be concise (4-5 sentences max)."""
         
         return await self.generate_ai_reasoning(results, prompt)
+    
+    async def _suggest_new_positions(
+        self,
+        portfolio: Dict[str, Any],
+        position_analyses: List[Dict[str, Any]],
+        macro: Dict[str, Any],
+        sector: Dict[str, Any],
+        risk_assessment: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Use AI to suggest 2-5 new positions outside current portfolio"""
+        
+        # Extract current portfolio symbols
+        current_symbols = [p['symbol'] for p in position_analyses]
+        
+        # Extract favorable sectors
+        sector_predictions = sector.get('sector_predictions', [])
+        favorable_sectors = [p for p in sector_predictions if p.get('prediction_score', 0) > 0]
+        favorable_sectors = sorted(favorable_sectors, key=lambda x: x.get('prediction_score', 0), reverse=True)[:3]
+        
+        unfavorable_sectors = [p for p in sector_predictions if p.get('prediction_score', 0) < 0]
+        unfavorable_sectors = sorted(unfavorable_sectors, key=lambda x: x.get('prediction_score', 0))[:3]
+        
+        # Extract macro stance
+        macro_score = macro.get('confidence_score', {}).get('score', 50)
+        macro_outlook = macro.get('confidence_score', {}).get('outlook', 'neutral')
+        
+        # Extract risk tolerance
+        overall_risk = risk_assessment.get('overall_risk', 'MEDIUM')
+        
+        # Prepare sector data for prompt
+        fav_sectors_data = [{'sector': p['sector'], 'score': p['prediction_score'], 'outlook': p.get('outlook', 'neutral')} for p in favorable_sectors]
+        unfav_sectors_data = [{'sector': p['sector'], 'score': p['prediction_score']} for p in unfavorable_sectors]
+        
+        # Build detailed prompt with all analysis data
+        prompt = f"""Based on this comprehensive portfolio analysis, suggest 2-5 specific stock tickers or ETFs to BUY as new positions (not currently held).
+
+CURRENT PORTFOLIO:
+- Symbols held: {', '.join(current_symbols)}
+- Risk level: {overall_risk}
+- Total positions: {len(current_symbols)}
+
+MACRO ENVIRONMENT:
+- Confidence score: {macro_score}/100 ({macro_outlook})
+- Stance: {'Bullish - favor growth/cyclicals' if macro_score > 60 else 'Bearish - favor defensives' if macro_score < 40 else 'Neutral - balanced approach'}
+
+FAVORABLE SECTORS (to prioritize):
+{json.dumps(fav_sectors_data, indent=2)}
+
+UNFAVORABLE SECTORS (to avoid):
+{json.dumps(unfav_sectors_data, indent=2)}
+
+RISK TOLERANCE: Match portfolio's {overall_risk} risk profile
+
+Requirements:
+1. Suggest 2-5 tickers (stocks or ETFs)
+2. Focus on favorable sectors identified above
+3. Align with macro stance (growth vs defensive)
+4. Do NOT suggest any symbols already in portfolio: {', '.join(current_symbols)}
+5. Match {overall_risk} risk tolerance
+6. For each suggestion provide: ticker, company/fund name, sector, and 1-2 sentence rationale
+
+Format your response as a JSON array:
+[
+  {{"ticker": "TICKER", "name": "Company/Fund Name", "sector": "Sector Name", "rationale": "Brief explanation", "signal_strength": "BUY or WATCH"}}
+]
+
+Be specific and actionable. Only suggest real, liquid securities."""
+        
+        try:
+            # Call OpenAI for suggestions
+            self.log("Generating new position suggestions with AI...")
+            context_data = {"macro_score": macro_score, "risk_level": overall_risk}
+            response_text = await self.generate_ai_reasoning(context_data, prompt)
+            
+            # Parse JSON response
+            import re
+            # Extract JSON array from response (in case there's extra text)
+            json_match = re.search(r'\[\s*\{.*\}\s*\]', response_text, re.DOTALL)
+            if json_match:
+                suggestions_list = json.loads(json_match.group())
+            else:
+                # Fallback: try parsing entire response
+                suggestions_list = json.loads(response_text)
+            
+            return {
+                "suggestions": suggestions_list,
+                "count": len(suggestions_list),
+                "based_on": {
+                    "favorable_sectors": [p['sector'] for p in favorable_sectors],
+                    "macro_score": macro_score,
+                    "risk_level": overall_risk
+                }
+            }
+            
+        except Exception as e:
+            self.log(f"Error generating new position suggestions: {e}", level="ERROR")
+            return {
+                "suggestions": [],
+                "count": 0,
+                "error": str(e)
+            }

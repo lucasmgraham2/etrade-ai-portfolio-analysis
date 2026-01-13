@@ -55,6 +55,15 @@ class SentimentAgent(BaseAgent):
         self.newsapi_mode = (config.get("newsapi_mode") if config else None) or "free"  # free | everything | disabled
         self.newsapi_max_calls = (config.get("newsapi_max_calls") if config else None) or 15  # cap per run
         self.newsapi_page_size = (config.get("newsapi_page_size") if config else None) or 25  # reduce load
+
+        # Track whether we've already warned about missing NLP to avoid noisy logs
+        self._nlp_warning_logged = False
+        if not (NLP_AVAILABLE and sentiment_analyzer):
+            self.log(
+                "NLP transformers not available; falling back to keyword-based sentiment. Install `transformers` for better accuracy.",
+                "WARNING",
+            )
+            self._nlp_warning_logged = True
         
         # Initialize OpenAI client if available
         self.openai_client = None
@@ -467,7 +476,9 @@ class SentimentAgent(BaseAgent):
             self.log(f"NLP analysis complete: {nlp_result.get('articles_analyzed', 0)} articles analyzed, score {nlp_result.get('score', 0):.3f}", "INFO")
             return nlp_result
         else:
-            self.log("NLP not available, transformer model not loaded - using keyword fallback", "WARNING")
+            if not self._nlp_warning_logged:
+                self.log("NLP not available, transformer model not loaded - using keyword fallback", "WARNING")
+                self._nlp_warning_logged = True
             # Only use keywords as absolute fallback when NLP is unavailable
             return self._analyze_with_keywords(articles)
     
@@ -483,7 +494,9 @@ class SentimentAgent(BaseAgent):
             for article in articles[:50]:  # Analyze up to 50 articles for deeper sentiment
                 try:
                     # Combine title and description for better context
-                    text = f"{article.get('title', '')} {article.get('description', '')}"
+                    title = article.get("title") or ""
+                    description = article.get("description") or ""
+                    text = f"{title} {description}"
                     
                     if not text.strip():
                         continue
@@ -560,7 +573,7 @@ class SentimentAgent(BaseAgent):
         
         total_score = 0
         for article in articles[:50]:  # Analyze up to 50 articles for deeper sentiment
-            title = (article.get("title", "") + " " + article.get("description", "")).lower()
+            title = ((article.get("title") or "") + " " + (article.get("description") or "")).lower()
             
             pos_count = sum(1 for kw in positive_keywords if kw in title)
             neg_count = sum(1 for kw in negative_keywords if kw in title)
@@ -585,7 +598,9 @@ class SentimentAgent(BaseAgent):
         return {
             "score": normalized_score,
             "label": label,
-            "count": len(articles)
+            "count": len(articles),
+            "method": "keywords",
+            "articles_analyzed": min(len(articles), 50),
         }
     
     def _parse_alpha_vantage_sentiment(self, data: Dict) -> Dict[str, Any]:

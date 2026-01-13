@@ -6,6 +6,14 @@ See the full documentation at [ai/multi_agent/README.md](multi_agent/README.md).
 
 ## Quick Start
 
+Use a virtual environment (recommended) and install AI deps plus NLP extras for transformer sentiment:
+```bash
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r ai/requirements.txt
+pip install transformers torch
+```
+
 Run the multi-agent analysis:
 ```bash
 cd ai

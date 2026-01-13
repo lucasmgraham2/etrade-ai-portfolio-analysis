@@ -89,9 +89,21 @@ cd etrade-ai-portfolio-analysis
 
 ### 3. Install Dependencies
 
+Recommended: use a local virtual environment to keep deps isolated.
+
 ```bash
+# Create venv
+python -m venv .venv
+
+# Activate (PowerShell)
+.\.venv\Scripts\Activate.ps1
+
+# Base requirements
 pip install -r etrade/requirements.txt
 pip install -r ai/requirements.txt
+
+# NLP upgrades for transformer-based sentiment (optional but recommended)
+pip install transformers torch
 ```
 
 ### 4. Run Complete Analysis (Recommended)

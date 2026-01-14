@@ -180,6 +180,16 @@ class SectorAgent(BaseAgent):
         if "alpha_vantage" in self.api_keys and self.api_keys.get("alpha_vantage"):
             data = await self._fetch_real_sector_data()
             try:
+                # Delete old sector cache files before creating new one
+                for old_cache in cache_dir.glob("sector_perf_*.json"):
+                    if old_cache != cache_path:
+                        try:
+                            old_cache.unlink()
+                            self.log(f"Deleted old sector cache: {old_cache.name}")
+                        except Exception:
+                            pass
+                
+                # Write new cache
                 with open(cache_path, 'w') as f:
                     json.dump(data, f)
             except Exception:

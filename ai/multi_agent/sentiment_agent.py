@@ -171,7 +171,7 @@ class SentimentAgent(BaseAgent):
         
         # Simulated only if no keys provided
         self.log("No news API key found, using simulated data", "WARNING")
-        return {"source": "none", "symbols": {s: {"score": 0, "label": "neutral", "count": 0} for s in symbols}, "timestamp": datetime.now().isoformat()}
+        return {"source": "none", "symbols": {s: {"score": None, "label": "INSUFFICIENT_DATA", "count": 0, "articles_analyzed": 0} for s in symbols}, "timestamp": datetime.now().isoformat()}
     
     def _has_meaningful_data(self, data: Dict[str, Any]) -> bool:
         """Check if news data has meaningful content (not just empty due to quota/errors)"""
@@ -203,10 +203,10 @@ class SentimentAgent(BaseAgent):
                             symbol_sentiments[symbol] = sentiment_score
                         else:
                             self.log(f"Failed to fetch news for {symbol}: {response.status}", "WARNING")
-                            symbol_sentiments[symbol] = {"score": 0, "label": "neutral"}
+                            symbol_sentiments[symbol] = {"score": None, "label": "INSUFFICIENT_DATA"}
                 except Exception as e:
                     self.log(f"Error fetching news for {symbol}: {str(e)}", "ERROR")
-                    symbol_sentiments[symbol] = {"score": 0, "label": "neutral"}
+                    symbol_sentiments[symbol] = {"score": None, "label": "INSUFFICIENT_DATA"}
                     
                 # Rate limiting
                 await asyncio.sleep(0.5)
@@ -534,8 +534,8 @@ class SentimentAgent(BaseAgent):
                     continue
             
             if not sentiments:
-                self.log("NLP analysis produced no sentiment scores, returning neutral", "WARNING")
-                return {"score": 0, "label": "neutral", "count": len(articles), "articles_analyzed": 0, "method": "nlp"}
+                self.log("NLP analysis produced no sentiment scores, returning INSUFFICIENT_DATA", "WARNING")
+                return {"score": None, "label": "INSUFFICIENT_DATA", "count": len(articles), "articles_analyzed": 0, "method": "nlp"}
             
             # Average sentiment score across all analyzed articles
             avg_score = sum(sentiments) / len(sentiments)
@@ -615,7 +615,7 @@ class SentimentAgent(BaseAgent):
         feed = data.get("feed", [])
         
         if not feed:
-            return {"score": 0, "label": "neutral", "count": 0}
+            return {"score": None, "label": "INSUFFICIENT_DATA", "count": 0, "articles_analyzed": 0}
         
         total_sentiment = 0
         count = 0
@@ -651,7 +651,7 @@ class SentimentAgent(BaseAgent):
         symbols: List[str],
         news: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Aggregate sentiment from news source"""
+        """Aggregate sentiment from news source and track data quality"""
         
         aggregated = {}
         
@@ -660,27 +660,45 @@ class SentimentAgent(BaseAgent):
             news_sentiment = news.get("symbols", {}).get(symbol, {})
             
             # Use news score directly
-            score = news_sentiment.get("score", 0)
+            score = news_sentiment.get("score")
+            label = news_sentiment.get("label", "INSUFFICIENT_DATA")
+            articles_analyzed = news_sentiment.get("articles_analyzed", 0)
             
-            # Determine overall label
-            if score > 0.12:
-                label = "bullish"
-                confidence = min(abs(score) / 0.5, 1.0)
-            elif score < -0.12:
-                label = "bearish"
-                confidence = min(abs(score) / 0.5, 1.0)
+            # Handle INSUFFICIENT_DATA case
+            if label == "INSUFFICIENT_DATA" or score is None:
+                aggregated[symbol] = {
+                    "overall_score": None,
+                    "sentiment": "INSUFFICIENT_DATA",
+                    "confidence": 0.0,
+                    "news_score": None,
+                    "method": news_sentiment.get("method", "unknown"),
+                    "articles_analyzed": articles_analyzed,
+                    "data_quality": "no_data"
+                }
             else:
-                label = "neutral"
-                confidence = 1.0 - min(abs(score) / 0.12, 1.0)
-            
-            aggregated[symbol] = {
-                "overall_score": round(score, 3),
-                "sentiment": label,
-                "confidence": round(confidence, 2),
-                "news_score": news_sentiment.get("score", 0),
-                "method": news_sentiment.get("method", "unknown"),  # Include NLP vs keyword method
-                "articles_analyzed": news_sentiment.get("articles_analyzed", 0)
-            }
+                # Determine overall label based on score
+                if score is None:
+                    label = "INSUFFICIENT_DATA"
+                    confidence = 0.0
+                elif score > 0.12:
+                    label = "bullish"
+                    confidence = min(abs(score) / 0.5, 1.0)
+                elif score < -0.12:
+                    label = "bearish"
+                    confidence = min(abs(score) / 0.5, 1.0)
+                else:
+                    label = "neutral"
+                    confidence = 1.0 - min(abs(score) / 0.12, 1.0)
+                
+                aggregated[symbol] = {
+                    "overall_score": round(score, 3),
+                    "sentiment": label,
+                    "confidence": round(confidence, 2),
+                    "news_score": news_sentiment.get("score", 0),
+                    "method": news_sentiment.get("method", "unknown"),
+                    "articles_analyzed": articles_analyzed,
+                    "data_quality": "sufficient" if articles_analyzed > 0 else "partial"
+                }
         
         return aggregated
 
@@ -704,8 +722,10 @@ class SentimentAgent(BaseAgent):
             supp = supp_symbols.get(symbol, {"score": 0, "label": "neutral", "count": 0})
 
             # Dynamic weighting based on data availability
-            av_has_data = av.get("count", 0) > 0 or abs(av.get("score", 0)) > 0.01
-            supp_has_data = supp.get("count", 0) > 0 or abs(supp.get("score", 0)) > 0.01
+            av_score = av.get("score")
+            supp_score = supp.get("score")
+            av_has_data = av.get("count", 0) > 0 or (av_score is not None and abs(av_score) > 0.01)
+            supp_has_data = supp.get("count", 0) > 0 or (supp_score is not None and abs(supp_score) > 0.01)
             
             if av_has_data and supp_has_data:
                 # Both have data: use weighted blend (AV 60%, supplemental 40%)
@@ -813,11 +833,18 @@ class SentimentAgent(BaseAgent):
         for symbol, data in sentiment_data.items():
             score = data["overall_score"]
             sentiment = data["sentiment"]
-            confidence = data["confidence"]
-            news_score = data.get("news_score", 0)
+            confidence = data.get("confidence", 0)
+            news_score = data.get("news_score")
+            data_quality = data.get("data_quality", "unknown")
+            articles_analyzed = data.get("articles_analyzed", 0)
             
+            # Handle INSUFFICIENT_DATA case
+            if sentiment == "INSUFFICIENT_DATA":
+                recommendations.append(
+                    f"Monitor {symbol}: insufficient news data (0 articles analyzed); unable to determine sentiment"
+                )
             # More lenient thresholds to give actionable recommendations
-            if sentiment == "bullish":
+            elif sentiment == "bullish":
                 if confidence > 0.5:  # Slightly higher gate to reduce noise
                     recommendations.append(
                         f"BUY bias for {symbol}: news sentiment bullish (score {score:.2f}, news {news_score:.2f}); consider adding/averaging up"
@@ -846,10 +873,13 @@ class SentimentAgent(BaseAgent):
         """Create summary of sentiment analysis"""
         total_symbols = len(sentiment_data)
         
-        avg_score = sum(d["overall_score"] for d in sentiment_data.values()) / total_symbols
+        # Calculate average score excluding INSUFFICIENT_DATA entries
+        scores = [d["overall_score"] for d in sentiment_data.values() if d["overall_score"] is not None]
+        avg_score = sum(scores) / len(scores) if scores else 0
         
         bullish_count = sum(1 for d in sentiment_data.values() if d["sentiment"] == "bullish")
         bearish_count = sum(1 for d in sentiment_data.values() if d["sentiment"] == "bearish")
+        insufficient_count = sum(1 for d in sentiment_data.values() if d["sentiment"] == "INSUFFICIENT_DATA")
         
         if avg_score > 0.2:
             market_mood = "positive"
@@ -858,16 +888,21 @@ class SentimentAgent(BaseAgent):
         else:
             market_mood = "neutral"
         
-        return (
+        summary = (
             f"Market sentiment analysis across {total_symbols} portfolio holdings shows "
             f"a {market_mood} overall mood (score: {avg_score:.2f}). "
             f"{bullish_count} positions have bullish sentiment, {bearish_count} are bearish."
         )
+        
+        if insufficient_count > 0:
+            summary += f" Note: {insufficient_count} position(s) have insufficient news data."
+        
+        return summary
     
     async def _analyze_news_with_ai(self, articles: List[Dict]) -> Dict[str, Any]:
         """Use AI to analyze sentiment from news articles"""
         if not articles:
-            return {"score": 0, "label": "neutral", "count": 0}
+            return {"score": None, "label": "INSUFFICIENT_DATA", "count": 0, "articles_analyzed": 0}
         
         # Prepare articles summary for AI
         articles_text = "\n\n".join([
@@ -925,31 +960,40 @@ REASONING: [brief explanation]"""
             
         except Exception as e:
             self.log(f"AI sentiment analysis failed: {str(e)}", "ERROR")
-            return {"score": 0, "label": "neutral", "count": len(articles)}
+            return {"score": None, "label": "INSUFFICIENT_DATA", "count": len(articles), "articles_analyzed": 0}
     
     async def _generate_sentiment_ai_reasoning(self, results: Dict[str, Any], symbols: List[str]) -> str:
-        """Generate AI reasoning for sentiment analysis results"""
+        """Generate AI reasoning for sentiment analysis results with data quality verification"""
         
         # Extract key metrics
         overall = results.get("overall_sentiment", {})
         bullish = [s for s, d in overall.items() if d.get("sentiment") == "bullish"]
         bearish = [s for s, d in overall.items() if d.get("sentiment") == "bearish"]
+        insufficient_data = [s for s, d in overall.items() if d.get("sentiment") == "INSUFFICIENT_DATA"]
+        
+        # Calculate data quality
+        analyzed_count = sum(1 for d in overall.values() if d.get("articles_analyzed", 0) > 0)
+        data_quality_pct = (analyzed_count / len(symbols) * 100) if symbols else 0
         
         prompt = f"""Analyze this portfolio sentiment data and provide concise investment insights.
 
 Portfolio: {len(symbols)} positions
+Data Quality: {data_quality_pct:.0f}% of positions have article data
 Bullish signals: {', '.join(bullish) if bullish else 'none'}
 Bearish signals: {', '.join(bearish) if bearish else 'none'}
+Insufficient Data: {', '.join(insufficient_data) if insufficient_data else 'none'}
 
 Top sentiment scores:
-{json.dumps({s: {'score': d.get('overall_score'), 'sentiment': d.get('sentiment')} for s, d in list(overall.items())[:5]}, indent=2)}
+{json.dumps({s: {'score': d.get('overall_score'), 'sentiment': d.get('sentiment'), 'articles': d.get('articles_analyzed', 0)} for s, d in list(overall.items())[:5]}, indent=2)}
 
 Provide:
-1. What the sentiment tells us about market perception
-2. Which positions warrant attention and why
+1. What the sentiment tells us about market perception (noting any data gaps)
+2. Which positions warrant attention and why (flag positions with insufficient data)
 3. Key risks or opportunities
 4. Actionable takeaway
 
 Be concise (3-4 sentences max)."""
         
         return await self.generate_ai_reasoning(results, prompt)
+
+

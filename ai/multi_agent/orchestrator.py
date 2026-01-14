@@ -56,7 +56,6 @@ class AgentOrchestrator:
             
             # Store results
             self.results[agent.name] = agent_output
-            self.execution_order.append(agent.name)
             
             # Add agent results to context for next agents
             context[agent.name] = agent_output["results"]
@@ -107,7 +106,6 @@ class AgentOrchestrator:
             # Update context with results
             for agent, output in zip(group_agents, group_results):
                 self.results[agent.name] = output
-                self.execution_order.append(agent.name)
                 context[agent.name] = output["results"]
         
         end_time = datetime.now()
@@ -216,12 +214,36 @@ class AgentOrchestrator:
                 # Add AI reasoning if available
                 if 'ai_reasoning' in results and results['ai_reasoning']:
                     report_lines.append("\nAI Analysis:")
-                    report_lines.append(f"  {results['ai_reasoning']}")
+                    # Split by lines and clean up formatting
+                    reasoning_lines = results['ai_reasoning'].strip().split('\n')
+                    for line in reasoning_lines:
+                        # Remove leading whitespace and ensure consistent formatting
+                        clean_line = line.strip()
+                        if clean_line:
+                            report_lines.append(clean_line)
                 
                 if 'recommendations' in results:
                     report_lines.append("\nRecommendations:")
                     for rec in results['recommendations']:
-                        report_lines.append(f"  • {rec}")
+                        rec_stripped = rec.strip()
+                        
+                        # Skip empty lines or just whitespace
+                        if not rec_stripped:
+                            continue
+                        
+                        # Headers (=== ... ===) don't get bullets
+                        if rec_stripped.startswith('==='):
+                            report_lines.append(f"  {rec_stripped}")
+                        # Already has bullet (starts with •)
+                        elif rec_stripped.startswith('•'):
+                            report_lines.append(f"  {rec_stripped}")
+                        # Check if this is an indented sub-item (starts with spaces in original)
+                        elif rec.startswith('    '):
+                            # Preserve indentation for nested items
+                            report_lines.append(f"  {rec.lstrip()}")
+                        # Regular items get bullets
+                        else:
+                            report_lines.append(f"  • {rec_stripped}")
 
                 # Provide richer detail for integrator output
                 if agent_name == "Integrator":

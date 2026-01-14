@@ -28,22 +28,20 @@ def load_portfolio_data(filepath: str = None) -> dict:
     """Load portfolio data from JSON file, preferring canonical folder"""
     
     if not filepath:
-        # Check both potential locations and choose newest file overall
         candidate_dirs = [
-            Path(__file__).parent.parent / "etrade" / "etrade_reports",  # canonical
-            Path(__file__).parent.parent / "etrade_reports"               # legacy
+            Path(__file__).parent.parent / "etrade" / "etrade_reports",
+            Path(__file__).parent.parent / "etrade_reports"
         ]
         json_candidates = []
         for d in candidate_dirs:
             if d.exists():
-                json_candidates.extend(list(d.glob("etrade_data_*.json")))
+                json_candidates.extend(d.glob("etrade_data_*.json"))
         
         if not json_candidates:
             raise FileNotFoundError("No portfolio data files found in etrade/etrade_reports or legacy etrade_reports")
         
         filepath = max(json_candidates, key=os.path.getmtime)
-        chosen_dir = Path(filepath).parent
-        print(f"Loading portfolio data from: {chosen_dir.name}/{Path(filepath).name}")
+        print(f"Loading portfolio data from: {filepath.parent.name}/{filepath.name}")
     
     with open(filepath, 'r') as f:
         return json.load(f)
@@ -151,17 +149,20 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
                 except Exception as e:
                     print(f"   Warning: Could not move {stray.name}: {e}")
         
-        # Delete old analysis files
-        print("Cleaning up old analysis files...")
-        old_json_files = list(output_dir.glob("multi_agent_analysis_*.json"))
-        old_txt_files = list(output_dir.glob("multi_agent_report_*.txt"))
-        
-        for old_file in old_json_files + old_txt_files:
-            try:
-                old_file.unlink()
-                print(f"   Deleted: {old_file.name}")
-            except Exception as e:
-                print(f"   Warning: Could not delete {old_file.name}: {e}")
+        # Keep the last 3 reports instead of deleting everything
+        print("Cleaning up old analysis files (keep last 3)...")
+
+        def _prune(pattern: str):
+            files = sorted(output_dir.glob(pattern), key=os.path.getmtime, reverse=True)
+            for old_file in files[3:]:
+                try:
+                    old_file.unlink()
+                    print(f"   Deleted: {old_file.name}")
+                except Exception as e:
+                    print(f"   Warning: Could not delete {old_file.name}: {e}")
+
+        _prune("multi_agent_analysis_*.json")
+        _prune("multi_agent_report_*.txt")
         
         # Save new results
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

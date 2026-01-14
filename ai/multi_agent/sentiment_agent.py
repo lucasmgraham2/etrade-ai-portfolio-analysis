@@ -70,6 +70,17 @@ class SentimentAgent(BaseAgent):
         self.openai_client = None
         if OPENAI_AVAILABLE and self.api_keys.get("openai"):
             self.openai_client = AsyncOpenAI(api_key=self.api_keys["openai"])
+
+    @staticmethod
+    def _insufficient(reason: str = "none") -> Dict[str, Any]:
+        """Standardized shape for missing or inadequate sentiment data."""
+        return {
+            "score": None,
+            "label": "INSUFFICIENT_DATA",
+            "count": 0,
+            "articles_analyzed": 0,
+            "method": reason
+        }
         
     async def analyze(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -168,10 +179,14 @@ class SentimentAgent(BaseAgent):
             return await self._fetch_newsapi_data(symbols)
         if has_finnhub:
             return await self._fetch_finnhub_news(symbols)
-        
+
         # Simulated only if no keys provided
         self.log("No news API key found, using simulated data", "WARNING")
-        return {"source": "none", "symbols": {s: {"score": None, "label": "INSUFFICIENT_DATA", "count": 0, "articles_analyzed": 0} for s in symbols}, "timestamp": datetime.now().isoformat()}
+        return {
+            "source": "none",
+            "symbols": {s: self._insufficient("no_sources") for s in symbols},
+            "timestamp": datetime.now().isoformat()
+        }
     
     def _has_meaningful_data(self, data: Dict[str, Any]) -> bool:
         """Check if news data has meaningful content (not just empty due to quota/errors)"""
@@ -245,13 +260,13 @@ class SentimentAgent(BaseAgent):
                                 sentiment = self._analyze_news_articles(formatted_articles)
                                 symbol_sentiments[symbol] = sentiment
                             else:
-                                symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none"}
+                                symbol_sentiments[symbol] = self._insufficient("finnhub_empty")
                         else:
                             self.log(f"Finnhub error for {symbol}: HTTP {response.status}", "WARNING")
-                            symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none"}
+                            symbol_sentiments[symbol] = self._insufficient("finnhub_error")
                 except Exception as e:
                     self.log(f"Error fetching from Finnhub for {symbol}: {str(e)}", "WARNING")
-                    symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none"}
+                    symbol_sentiments[symbol] = self._insufficient("finnhub_error")
                 
                 # Respect rate limits (60/min = ~1/sec)
                 await asyncio.sleep(1.1)
@@ -265,28 +280,23 @@ class SentimentAgent(BaseAgent):
     async def _fetch_newsapi_data(self, symbols: List[str]) -> Dict[str, Any]:
         """Fetch news from NewsAPI and analyze sentiment with NLP"""
         api_key = self.api_keys.get("newsapi")
-        
+
         if not api_key:
             self.log("NewsAPI key not configured, skipping NewsAPI", "WARNING")
             return {"source": "newsapi", "symbols": {}, "timestamp": datetime.now().isoformat()}
-        
-        # Daily cache file to avoid repeated calls within the same day
+
+        # Daily cache and rate-limit lock
         date_str = datetime.now().strftime('%Y%m%d')
-        cache_path = f"analysis_cache/newsapi_cache_{date_str}.json"
         news_cache: Dict[str, Any] = {}
-        # Daily lock to skip NewsAPI once cap/429 is observed
         lock_filename = f"newsapi_lock_{date_str}.txt"
+
         try:
-            # Try loading existing cache
-            import os, json
-            full_cache_path = os.path.join(os.path.dirname(__file__), "..", "analysis_cache", f"newsapi_cache_{date_str}.json")
-            full_cache_path = os.path.normpath(full_cache_path)
+            full_cache_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "analysis_cache", f"newsapi_cache_{date_str}.json"))
             if os.path.exists(full_cache_path):
                 with open(full_cache_path, 'r', encoding='utf-8') as f:
                     news_cache = json.load(f)
-            # Check lock file
-            lock_path = os.path.join(os.path.dirname(__file__), "..", "analysis_cache", lock_filename)
-            lock_path = os.path.normpath(lock_path)
+
+            lock_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "analysis_cache", lock_filename))
             if os.path.exists(lock_path):
                 self.log("NewsAPI daily cap previously hit; skipping NewsAPI calls today", "INFO")
                 return {"source": "newsapi", "symbols": {}, "timestamp": datetime.now().isoformat(), "adherence": "daily_cap_lock"}
@@ -295,26 +305,22 @@ class SentimentAgent(BaseAgent):
 
         def save_cache():
             try:
-                import os, json
-                full_cache_path_local = os.path.join(os.path.dirname(__file__), "..", "analysis_cache", f"newsapi_cache_{date_str}.json")
-                full_cache_path_local = os.path.normpath(full_cache_path_local)
+                full_cache_path_local = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "analysis_cache", f"newsapi_cache_{date_str}.json"))
                 os.makedirs(os.path.dirname(full_cache_path_local), exist_ok=True)
                 with open(full_cache_path_local, 'w', encoding='utf-8') as f:
                     json.dump(news_cache, f, ensure_ascii=False, indent=2)
             except Exception as e:
                 self.log(f"Failed to save NewsAPI cache: {e}", "WARNING")
 
-        symbol_sentiments = {}
+        symbol_sentiments: Dict[str, Any] = {}
         rate_limit_hit = False
         calls_made = 0
 
-        # Determine strategy based on mode
         mode = self.newsapi_mode
         if mode == "disabled":
             self.log("NewsAPI disabled by configuration", "INFO")
             return {"source": "newsapi", "symbols": {}, "timestamp": datetime.now().isoformat()}
 
-        # In free mode, limit per-run requests and prioritize a subset of symbols
         symbols_to_query = symbols
         if mode == "free":
             symbols_to_query = symbols[:max(1, min(len(symbols), self.newsapi_max_calls))]
@@ -325,30 +331,27 @@ class SentimentAgent(BaseAgent):
             skip_logged = False
             for symbol in symbols_to_query:
                 try:
-                    # Skip if we've already hit rate limit
                     if rate_limit_hit:
-                        # Avoid spamming logs; one message is enough
                         if not skip_logged:
                             self.log("Skipping remaining symbols due to NewsAPI rate limit", "INFO")
                             skip_logged = True
-                        symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                        symbol_sentiments[symbol] = self._insufficient("newsapi_rate_limit")
                         continue
+
                     if mode == "free" and calls_made >= self.newsapi_max_calls:
                         self.log("NewsAPI free mode cap reached; switching to headlines fallback", "INFO")
                         rate_limit_hit = True
-                        symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                        symbol_sentiments[symbol] = self._insufficient("newsapi_cap")
                         continue
-                    
-                    # Calculate date range
+
                     end_date = datetime.now()
                     start_date = end_date - timedelta(days=self.lookback_days)
-                    
-                    # Use cache first in the same day
+
                     cached = news_cache.get(symbol)
                     if cached and cached.get("from") == start_date.strftime('%Y-%m-%d'):
                         articles = cached.get("articles", [])
                         self.log(f"NewsAPI cache hit: {len(articles)} articles for {symbol}", "DEBUG")
-                        sentiment = self._analyze_news_articles(articles) if articles else {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                        sentiment = self._analyze_news_articles(articles) if articles else self._insufficient("newsapi_cache_empty")
                         symbol_sentiments[symbol] = sentiment
                         continue
 
@@ -362,13 +365,13 @@ class SentimentAgent(BaseAgent):
                         f"pageSize={self.newsapi_page_size}&"
                         f"apiKey={api_key}"
                     )
-                    
+
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             articles = data.get("articles", [])
                             self.log(f"NewsAPI returned {len(articles)} articles for {symbol}", "DEBUG")
-                            # Update calls made and cache
+
                             calls_made += 1
                             news_cache[symbol] = {
                                 "from": start_date.strftime('%Y-%m-%d'),
@@ -377,68 +380,54 @@ class SentimentAgent(BaseAgent):
                                 "articles": articles,
                             }
                             save_cache()
-                            
-                            # Prioritize NLP transformer analysis
+
                             if articles:
                                 sentiment = self._analyze_news_articles(articles)
-                                self.log(f"{symbol}: NLP analysis - method={sentiment.get('method')}, articles_analyzed={sentiment.get('articles_analyzed', 0)}, score={sentiment.get('score', 0):.3f}", "DEBUG")
-                                
-                                # Only use OpenAI if NLP sentiment is weak/zero (to get deeper reasoning)
-                                if sentiment.get("score", 0) == 0 and self.openai_client:
+                                score_val = sentiment.get("score", 0) if sentiment.get("score") is not None else 0
+                                self.log(f"{symbol}: NLP analysis - method={sentiment.get('method')}, articles_analyzed={sentiment.get('articles_analyzed', 0)}, score={score_val:.3f}", "DEBUG")
+
+                                if sentiment.get("score") in (0, None) and self.openai_client:
                                     self.log(f"NLP inconclusive for {symbol}, trying OpenAI analysis", "INFO")
                                     ai_sentiment = await self._analyze_news_with_ai(articles)
-                                    if ai_sentiment.get("score") != 0:
+                                    if ai_sentiment.get("score") not in (None, 0):
                                         sentiment = ai_sentiment
                             else:
-                                sentiment = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
-                                
+                                sentiment = self._insufficient("newsapi_no_articles")
+
                             symbol_sentiments[symbol] = sentiment
                         elif response.status == 429:
-                            # Rate limit hit - log and skip remaining
                             self.log(f"NewsAPI rate limit (429) - free tier exhausted", "WARNING")
                             rate_limit_hit = True
-                            # Create lock file to skip future runs today
                             try:
-                                import os
-                                lock_path_write = os.path.join(os.path.dirname(__file__), "..", "analysis_cache", lock_filename)
-                                lock_path_write = os.path.normpath(lock_path_write)
+                                lock_path_write = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "analysis_cache", lock_filename))
                                 os.makedirs(os.path.dirname(lock_path_write), exist_ok=True)
                                 with open(lock_path_write, 'w', encoding='utf-8') as f:
                                     f.write(f"429 hit at {datetime.now().isoformat()}\n")
                             except Exception as e:
                                 self.log(f"Failed to write NewsAPI lock file: {e}", "WARNING")
-                            symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                            symbol_sentiments[symbol] = self._insufficient("newsapi_rate_limit")
                         else:
                             self.log(f"NewsAPI error for {symbol}: HTTP {response.status}", "WARNING")
-                            symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                            symbol_sentiments[symbol] = self._insufficient("newsapi_error")
                 except Exception as e:
                     self.log(f"Error fetching from NewsAPI for {symbol}: {str(e)}", "ERROR")
-                    symbol_sentiments[symbol] = {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
-                    
-                # Add delay to respect rate limits
+                    symbol_sentiments[symbol] = self._insufficient("newsapi_error")
+
                 await asyncio.sleep(1.0)
-        
-        # If we hit rate limit or cap, try one batch of top-headlines as fallback
+
         if rate_limit_hit and mode in ("free", "everything"):
             try:
                 self.log("Attempting top-headlines batch fallback", "INFO")
                 batch_sentiment = await self._fetch_newsapi_top_headlines(api_key)
                 if batch_sentiment:
-                    # Apply aggregate sentiment to remaining symbols not analyzed
                     for symbol in symbols:
                         if symbol not in symbol_sentiments:
-                            symbol_sentiments[symbol] = {
-                                "score": batch_sentiment["score"],
-                                "label": batch_sentiment["label"],
-                                "count": batch_sentiment.get("count", 0),
-                                "articles_analyzed": batch_sentiment.get("articles_analyzed", 0),
-                                "method": "top-headlines"
-                            }
+                            symbol_sentiments[symbol] = batch_sentiment if batch_sentiment else self._insufficient("newsapi_top_headlines")
             except Exception as e:
                 self.log(f"Top-headlines fallback failed: {e}", "WARNING")
 
         self.log(f"NewsAPI analysis complete: {len([s for s in symbol_sentiments.values() if s.get('method') == 'nlp'])} symbols with NLP analysis", "INFO")
-        
+
         return {
             "source": "newsapi",
             "symbols": symbol_sentiments,
@@ -462,19 +451,19 @@ class SentimentAgent(BaseAgent):
                     data = await response.json()
                     articles = data.get("articles", [])
                     self.log(f"Top-headlines returned {len(articles)} articles", "DEBUG")
-                    sentiment = self._analyze_news_articles(articles) if articles else {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                    sentiment = self._analyze_news_articles(articles) if articles else self._insufficient("newsapi_top_headlines_empty")
                     return sentiment
                 elif response.status == 429:
                     self.log("Top-headlines rate limit hit (429)", "WARNING")
-                    return {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                    return self._insufficient("newsapi_top_headlines_rate")
                 else:
                     self.log(f"Top-headlines error: HTTP {response.status}", "WARNING")
-                    return {"score": 0, "label": "neutral", "count": 0, "method": "none", "articles_analyzed": 0}
+                    return self._insufficient("newsapi_top_headlines_error")
     
     def _analyze_news_articles(self, articles: List[Dict]) -> Dict[str, Any]:
         """Analyze sentiment from news articles using NLP transformers"""
         if not articles:
-            return {"score": 0, "label": "neutral", "count": 0, "method": "none"}
+            return self._insufficient("no_articles")
 
         # Always use NLP if available (transformer model is more accurate than keywords)
         if NLP_AVAILABLE and sentiment_analyzer:
@@ -559,92 +548,8 @@ class SentimentAgent(BaseAgent):
             }
             
         except Exception as e:
-            self.log(f"NLP sentiment analysis failed: {str(e)}, falling back to keywords", "ERROR")
-            return self._analyze_with_keywords(articles)
-    
-    def _analyze_with_keywords(self, articles: List[Dict]) -> Dict[str, Any]:
-        """Fallback keyword-based sentiment analysis when NLP unavailable"""
-        # Keyword matching (when NLP not available)
-        positive_keywords = [
-            "surge", "soar", "rally", "gain", "growth", "profit", "beat", 
-            "strong", "upgrade", "bullish", "record", "high", "outperform",
-            "boom", "breakout", "accelerate", "momentum", "success", "win",
-            "excellent", "impressive", "positive", "fantastic", "tremendous"
-        ]
-        negative_keywords = [
-            "plunge", "drop", "fall", "loss", "miss", "weak", "downgrade", 
-            "bearish", "low", "underperform", "decline", "cut", "warning",
-            "crash", "risk", "collapse", "fail", "threat", "concern",
-            "poor", "negative", "disappointing", "disaster", "problem"
-        ]
-        
-        total_score = 0
-        for article in articles[:50]:  # Analyze up to 50 articles for deeper sentiment
-            title = ((article.get("title") or "") + " " + (article.get("description") or "")).lower()
-            
-            pos_count = sum(1 for kw in positive_keywords if kw in title)
-            neg_count = sum(1 for kw in negative_keywords if kw in title)
-            
-            if pos_count > neg_count:
-                total_score += 1
-            elif neg_count > pos_count:
-                total_score -= 1
-        
-        # Normalize score to -1 to 1
-        article_count = min(len(articles), 20)
-        normalized_score = total_score / article_count if article_count > 0 else 0
-        
-        # Categorize sentiment
-        if normalized_score > 0.2:
-            label = "bullish"
-        elif normalized_score < -0.2:
-            label = "bearish"
-        else:
-            label = "neutral"
-        
-        return {
-            "score": normalized_score,
-            "label": label,
-            "count": len(articles),
-            "method": "keywords",
-            "articles_analyzed": min(len(articles), 50),
-        }
-    
-    def _parse_alpha_vantage_sentiment(self, data: Dict) -> Dict[str, Any]:
-        """Parse Alpha Vantage sentiment response with improved thresholds"""
-        feed = data.get("feed", [])
-        
-        if not feed:
-            return {"score": None, "label": "INSUFFICIENT_DATA", "count": 0, "articles_analyzed": 0}
-        
-        total_sentiment = 0
-        count = 0
-        
-        for item in feed:
-            ticker_sentiment = item.get("ticker_sentiment", [])
-            for ts in ticker_sentiment:
-                score = float(ts.get("ticker_sentiment_score", 0))
-                total_sentiment += score
-                count += 1
-        
-        avg_sentiment = total_sentiment / count if count > 0 else 0
-        
-        # Categorize with lower thresholds for better discrimination
-        # Alpha Vantage scores range from -1 to +1
-        if avg_sentiment > 0.12:
-            label = "bullish"
-        elif avg_sentiment < -0.12:
-            label = "bearish"
-        else:
-            label = "neutral"
-        
-        return {
-            "score": avg_sentiment,
-            "label": label,
-            "count": count
-        }
-    
-    
+            self.log(f"NLP sentiment analysis failed: {str(e)}", "ERROR")
+            return self._insufficient("nlp_error")
     
     def _aggregate_sentiment(
         self,
@@ -708,51 +613,38 @@ class SentimentAgent(BaseAgent):
         av_data: Dict[str, Any],
         supplemental_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Merge Alpha Vantage and supplemental source sentiment with dynamic weighting.
-        Weights adapt based on actual data availability to avoid diluting good data.
-        """
-
-        merged = {}
+        """Merge Alpha Vantage (pre-computed sentiment) with supplemental NLP analysis."""
         av_symbols = av_data.get("symbols", {}) if av_data else {}
         supp_symbols = supplemental_data.get("symbols", {}) if supplemental_data else {}
-        supp_source = supplemental_data.get("source", "supplemental") if supplemental_data else "unknown"
 
+        merged = {}
         for symbol in symbols:
-            av = av_symbols.get(symbol, {"score": 0, "label": "neutral", "count": 0})
-            supp = supp_symbols.get(symbol, {"score": 0, "label": "neutral", "count": 0})
+            av = av_symbols.get(symbol, {})
+            supp = supp_symbols.get(symbol, {})
 
-            # Dynamic weighting based on data availability
             av_score = av.get("score")
             supp_score = supp.get("score")
-            av_has_data = av.get("count", 0) > 0 or (av_score is not None and abs(av_score) > 0.01)
-            supp_has_data = supp.get("count", 0) > 0 or (supp_score is not None and abs(supp_score) > 0.01)
+            av_has = av.get("count", 0) > 0 or (av_score is not None and abs(av_score) > 0.01)
+            supp_has = supp.get("count", 0) > 0 or (supp_score is not None and abs(supp_score) > 0.01)
             
-            if av_has_data and supp_has_data:
-                # Both have data: use weighted blend (AV 60%, supplemental 40%)
-                score = av.get("score", 0) * 0.6 + supp.get("score", 0) * 0.4
-                weight_method = "blended"
-            elif av_has_data:
-                # Only AV has data: use it at 100%
-                score = av.get("score", 0)
-                weight_method = "av_only"
-            elif supp_has_data:
-                # Only supplemental has data: use it at 100%
-                score = supp.get("score", 0)
-                weight_method = "supp_only"
+            if av_has and supp_has:
+                score = av_score * 0.6 + supp_score * 0.4
+            elif av_has:
+                score = av_score
+            elif supp_has:
+                score = supp_score
             else:
-                # Neither has data: neutral
-                score = 0
-                weight_method = "none"
+                score = None
 
-            # Derive label with same thresholds used elsewhere
-            if score > 0.12:
+            if score is None:
+                label = "INSUFFICIENT_DATA"
+            elif score > 0.12:
                 label = "bullish"
             elif score < -0.12:
                 label = "bearish"
             else:
                 label = "neutral"
 
-            # Track which methods were used
             methods_used = []
             if av.get("count", 0) > 0:
                 methods_used.append("alpha_vantage")

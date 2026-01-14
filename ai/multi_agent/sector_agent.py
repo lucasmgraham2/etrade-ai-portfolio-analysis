@@ -56,8 +56,9 @@ class SectorAgent(BaseAgent):
         
         # Get portfolio holdings (mapping disabled for speed; not required to find outperformers)
         portfolio = context.get("portfolio", {})
-        portfolio_symbols = portfolio.get("summary", {}).get("unique_symbols", [])
-        portfolio_sectors = {}
+        positions = []
+        for account in portfolio.get("accounts", []):
+            positions.extend(account.get("positions", []))
         
         # Fetch sector performance data
         sector_performance = await self._get_sector_performance()
@@ -74,9 +75,7 @@ class SectorAgent(BaseAgent):
         )
         
         # Analyze portfolio sector allocation
-        allocation_analysis = self._analyze_portfolio_allocation(
-            portfolio_sectors, predictions
-        )
+        allocation_analysis = self._analyze_portfolio_allocation(positions, predictions)
         
         # Generate insights
         insights = self._generate_insights(predictions, allocation_analysis)
@@ -87,7 +86,7 @@ class SectorAgent(BaseAgent):
             "sector_performance": sector_performance,
             "sector_trends": sector_trends,
             "portfolio_allocation": allocation_analysis,
-            "portfolio_sectors": portfolio_sectors,
+            "portfolio_sectors": allocation_analysis.get("sector_allocations", {}),
             "insights": insights,
             "recommendations": self._generate_recommendations(predictions, allocation_analysis),
             "timestamp": datetime.now().isoformat()
@@ -98,61 +97,6 @@ class SectorAgent(BaseAgent):
         results["ai_reasoning"] = ai_reasoning
         
         return results
-    
-    async def _map_symbols_to_sectors(
-        self, symbols: List[str], portfolio: Dict[str, Any]
-    ) -> Dict[str, List[str]]:
-        """
-        Map portfolio symbols to their sectors using live API data
-        
-        Uses Alpha Vantage OVERVIEW endpoint to fetch sector classifications
-        """
-        if not self.api_keys.get("alpha_vantage"):
-            self.log("Warning: Alpha Vantage key missing; sector classifications unavailable", "WARNING")
-            return {"Unknown": symbols}
-        
-        sectors_dict = {}
-        api_key = self.api_keys.get("alpha_vantage")
-        
-        async with aiohttp.ClientSession() as session:
-            for i, symbol in enumerate(symbols):
-                try:
-                    url = (
-                        f"https://www.alphavantage.co/query?"
-                        f"function=OVERVIEW&"
-                        f"symbol={symbol}&"
-                        f"apikey={api_key}"
-                    )
-                    
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            sector = data.get("Sector", "Other")
-                            
-                            if sector not in sectors_dict:
-                                sectors_dict[sector] = []
-                            sectors_dict[sector].append(symbol)
-                            self.log(f"Mapped {symbol} to {sector}")
-                        else:
-                            self.log(f"Failed to fetch sector for {symbol}", "WARNING")
-                            if "Other" not in sectors_dict:
-                                sectors_dict["Other"] = []
-                            sectors_dict["Other"].append(symbol)
-                    
-                except Exception as e:
-                    self.log(f"Error fetching sector for {symbol}: {str(e)}", "ERROR")
-                    if "Other" not in sectors_dict:
-                        sectors_dict["Other"] = []
-                    sectors_dict["Other"].append(symbol)
-                
-                # Rate limiting: Alpha Vantage free tier is 5 calls/min
-                if i < len(symbols) - 1:
-                    await asyncio.sleep(13)
-        
-        if not sectors_dict:
-            sectors_dict["Unknown"] = symbols
-        
-        return sectors_dict
     
     async def _get_sector_performance(self) -> Dict[str, Any]:
         """
@@ -176,7 +120,7 @@ class SectorAgent(BaseAgent):
                         self.log("Cache incomplete (missing sectors); fetching live data", "WARNING")
             except Exception:
                 pass
-        
+
         if "alpha_vantage" in self.api_keys and self.api_keys.get("alpha_vantage"):
             data = await self._fetch_real_sector_data()
             try:
@@ -196,7 +140,9 @@ class SectorAgent(BaseAgent):
                 # Non-fatal if cache write fails
                 pass
             return data
-        raise RuntimeError("Alpha Vantage API key missing: live sector data required")
+
+        self.log("Alpha Vantage API key missing; using simulated sector performance", "WARNING")
+        return {name: {"1d": 0, "5d": 0, "1m": 0, "3m": 0, "ytd": 0} for name in self.SECTORS.values()}
     
     async def _fetch_real_sector_data(self) -> Dict[str, Any]:
         """Fetch sector performance via SPDR sector ETFs with rate-limit compliance"""
@@ -384,38 +330,60 @@ class SectorAgent(BaseAgent):
         return adjustment
     
     def _analyze_portfolio_allocation(
-        self, portfolio_sectors: Dict[str, List[str]], predictions: List[Dict[str, Any]]
+        self, positions: List[Dict[str, Any]], predictions: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Analyze how portfolio is allocated across sectors"""
-        
-        # Count positions per sector
-        sector_counts = {sector: len(symbols) for sector, symbols in portfolio_sectors.items()}
-        total_positions = sum(sector_counts.values())
-        
-        # Calculate allocation percentages
+        """Analyze sector allocation using market value weights with simple fallbacks."""
+
+        sector_values: Dict[str, float] = {}
+        total_value = 0.0
+
+        for pos in positions:
+            value = pos.get("market_value") or (
+                pos.get("quantity", 0) * pos.get("current_price", 0)
+            )
+            if not value:
+                continue
+
+            symbol = pos.get("symbol", "Unknown")
+            sector_name = self.SECTORS.get(symbol) or pos.get("sector") or "Unknown"
+
+            sector_values[sector_name] = sector_values.get(sector_name, 0) + float(value)
+            total_value += float(value)
+
+        if total_value <= 0:
+            return {
+                "sector_values": {},
+                "sector_allocations": {},
+                "total_positions": len(positions),
+                "total_value": 0.0,
+                "overweight_sectors": [],
+                "underweight_sectors": []
+            }
+
         sector_allocations = {
-            sector: (count / total_positions * 100)
-            for sector, count in sector_counts.items()
+            sector: round(value / total_value * 100, 2)
+            for sector, value in sector_values.items()
+            if value > 0
         }
-        
-        # Compare to predictions
+
         overweight_sectors = []
         underweight_sectors = []
-        
+
         for pred in predictions:
             sector = pred["sector"]
             allocation = sector_allocations.get(sector, 0)
             outlook = pred["outlook"]
-            
+
             if outlook == "outperform" and allocation < 10:
                 underweight_sectors.append(sector)
             elif outlook == "underperform" and allocation > 20:
                 overweight_sectors.append(sector)
-        
+
         return {
-            "sector_counts": sector_counts,
+            "sector_values": sector_values,
             "sector_allocations": sector_allocations,
-            "total_positions": total_positions,
+            "total_positions": len(positions),
+            "total_value": round(total_value, 2),
             "overweight_sectors": overweight_sectors,
             "underweight_sectors": underweight_sectors
         }

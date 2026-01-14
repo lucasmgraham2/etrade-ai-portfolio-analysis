@@ -364,11 +364,11 @@ def main(existing_session=None, existing_base_url=None):
     output_dir = "etrade_reports"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Delete previous report files
-    print("\nCleaning up old reports...")
+    # Keep only the last 3 per pattern to preserve history without bloat
+    print("\nPruning old reports (keep last 3 per type)...")
     for pattern in ["etrade_data_*.json", "etrade_data_*.txt", "etrade_summary_*.txt"]:
-        old_files = glob.glob(os.path.join(output_dir, pattern))
-        for old_file in old_files:
+        files = sorted(glob.glob(os.path.join(output_dir, pattern)), key=os.path.getmtime, reverse=True)
+        for old_file in files[3:]:
             try:
                 os.remove(old_file)
                 print(f"  [OK] Deleted: {os.path.basename(old_file)}")

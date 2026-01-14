@@ -115,8 +115,6 @@ class MacroAgent(BaseAgent):
         except Exception as e:
             self.log(f"Macro analysis failed: {str(e)}", "ERROR")
             raise
-            self.log(f"Macro analysis failed: {str(e)}", "ERROR")
-            raise
     
     def _calculate_final_confidence_score(
         self,

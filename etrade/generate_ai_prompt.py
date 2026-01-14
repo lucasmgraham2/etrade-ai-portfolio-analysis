@@ -5,20 +5,22 @@ Automatically populates the AI prompt template with live portfolio data
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 def load_portfolio_data():
-    """Load the most recent portfolio JSON data"""
-    # Find the most recent JSON file in etrade_reports
-    reports_dir = 'etrade_reports'
-    json_files = [f for f in os.listdir(reports_dir) if f.startswith('etrade_data_') and f.endswith('.json')]
-    
-    if not json_files:
-        raise FileNotFoundError("No portfolio data found in etrade_reports/")
-    
-    # Get the most recent file
-    latest_file = sorted(json_files)[-1]
-    filepath = os.path.join(reports_dir, latest_file)
-    
+    """Load the most recent portfolio JSON data from canonical path with legacy fallback"""
+    candidate_dirs = [Path('etrade/etrade_reports'), Path('etrade_reports')]
+    json_candidates = []
+
+    for reports_dir in candidate_dirs:
+        if reports_dir.is_dir():
+            json_candidates.extend(reports_dir.glob('etrade_data_*.json'))
+
+    if not json_candidates:
+        raise FileNotFoundError("No portfolio data found in etrade/etrade_reports or legacy etrade_reports")
+
+    filepath = max(json_candidates, key=os.path.getmtime)
+
     with open(filepath, 'r') as f:
         return json.load(f)
 

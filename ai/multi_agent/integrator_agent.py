@@ -77,7 +77,18 @@ class IntegratorAgent(BaseAgent):
         )
 
         # Bucket recommendations for quick view
-        recommendation_buckets = self._bucket_position_recommendations(position_analyses)
+        recommendation_buckets = {"buy": [], "hold": [], "sell": []}
+        for p in position_analyses:
+            rec = p.get("recommendation")
+            symbol = p.get("symbol")
+            entry = f"{symbol} ({rec})"
+            if rec in ["STRONG_BUY", "BUY"]:
+                recommendation_buckets["buy"].append(entry)
+            elif rec in ["HOLD"]:
+                recommendation_buckets["hold"].append(entry)
+            elif rec in ["SELL", "TAKE_PROFIT", "CUT_LOSS", "STRONG_SELL"]:
+                recommendation_buckets["sell"].append(entry)
+        
         portfolio_recommendations["recommendation_buckets"] = recommendation_buckets
         
         # Generate executive summary
@@ -93,7 +104,10 @@ class IntegratorAgent(BaseAgent):
             "action_priorities": action_priorities,
             "risk_assessment": risk_assessment,
             "recommendation_buckets": recommendation_buckets,
-            "recommendations": self._format_recommendations(action_priorities),
+            "recommendations": [
+                f"[Priority {a['priority']}] {a['action']}" + (f" — {a['rationale']}" if a.get('rationale') else "")
+                for a in action_priorities
+            ],
             "timestamp": datetime.now().isoformat()
         }
         
@@ -414,27 +428,6 @@ class IntegratorAgent(BaseAgent):
             "underweight": allocation.get("underweight_sectors", []),
             "overweight": allocation.get("overweight_sectors", [])
         }
-
-    def _bucket_position_recommendations(
-        self, position_analyses: List[Dict[str, Any]]
-    ) -> Dict[str, List[str]]:
-        """Group symbols into buy/hold/sell buckets for clear action summary."""
-
-        buckets = {"buy": [], "hold": [], "sell": []}
-
-        for p in position_analyses:
-            rec = p.get("recommendation")
-            symbol = p.get("symbol")
-            entry = f"{symbol} ({rec})"
-
-            if rec in ["STRONG_BUY", "BUY"]:
-                buckets["buy"].append(entry)
-            elif rec in ["HOLD"]:
-                buckets["hold"].append(entry)
-            elif rec in ["SELL", "TAKE_PROFIT", "CUT_LOSS", "STRONG_SELL"]:
-                buckets["sell"].append(entry)
-
-        return buckets
     
     def _generate_portfolio_recommendations(
         self,
@@ -797,20 +790,6 @@ class IntegratorAgent(BaseAgent):
             )
         
         return " ".join(summary_parts)
-    
-    def _format_recommendations(self, action_priorities: List[Dict[str, Any]]) -> List[str]:
-        """Format action priorities into readable recommendations"""
-        
-        recommendations = []
-        
-        for action in action_priorities:
-            rec_text = f"[Priority {action['priority']}] {action['action']}"
-            rationale = action.get("rationale")
-            if rationale:
-                rec_text += f" — {rationale}"
-            recommendations.append(rec_text)
-        
-        return recommendations
     
     async def _generate_integrator_ai_reasoning(
         self,

@@ -31,21 +31,18 @@ def consolidate_etrade_reports(root_dir: Path):
     legacy_dir = root_dir / "etrade_reports"
     canonical_dir = root_dir / "etrade" / "etrade_reports"
     
-    if not canonical_dir.exists():
-        canonical_dir.mkdir(parents=True, exist_ok=True)
+    canonical_dir.mkdir(parents=True, exist_ok=True)
     
     if legacy_dir.exists():
         moved = 0
-        for pattern in ("etrade_data_*.json", "etrade_summary_*.txt", "etrade_data_*.txt"):
-            for f in legacy_dir.glob(pattern):
-                try:
-                    shutil.move(str(f), str(canonical_dir / f.name))
-                    moved += 1
-                except Exception:
-                    pass
+        for f in legacy_dir.glob("etrade_*.*"):
+            try:
+                shutil.move(str(f), str(canonical_dir / f.name))
+                moved += 1
+            except Exception:
+                pass
         if moved:
             print(f"   Moved {moved} legacy report(s) into etrade/etrade_reports")
-        # Remove legacy dir if empty
         try:
             if not any(legacy_dir.iterdir()):
                 legacy_dir.rmdir()

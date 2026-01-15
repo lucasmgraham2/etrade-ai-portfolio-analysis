@@ -260,6 +260,7 @@ class PopularMetricsAnalyzer:
             f"https://www.alphavantage.co/query?"
             f"function=TIME_SERIES_DAILY&"
             f"symbol=SPY&"
+            f"outputsize=full&"
             f"apikey={self.alpha_vantage_key}"
         )
         last_err = None

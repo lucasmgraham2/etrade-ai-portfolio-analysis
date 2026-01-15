@@ -222,6 +222,12 @@ class AgentOrchestrator:
                         if clean_line:
                             report_lines.append(clean_line)
                 
+                # Add insights section (detailed breakdowns)
+                if 'insights' in results and results['insights']:
+                    report_lines.append("\nDetailed Analysis:")
+                    for insight in results['insights']:
+                        report_lines.append(f"  {insight}")
+                
                 if 'recommendations' in results:
                     report_lines.append("\nRecommendations:")
                     for rec in results['recommendations']:

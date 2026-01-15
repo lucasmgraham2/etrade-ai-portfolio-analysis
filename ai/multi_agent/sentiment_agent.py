@@ -773,6 +773,7 @@ Provide:
 3. Key risks or opportunities
 4. Actionable takeaway
 
+IMPORTANT: Use PLAIN TEXT formatting only - NO markdown syntax (no ###, **, bullets, etc.).
 Be concise (3-4 sentences max)."""
         
         return await self.generate_ai_reasoning(results, prompt)

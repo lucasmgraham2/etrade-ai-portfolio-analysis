@@ -892,6 +892,7 @@ Provide:
 3. Top 2-3 specific actions to take now
 4. Key risk factors to monitor (especially crisis flags if active)
 
+IMPORTANT: Use PLAIN TEXT formatting only - NO markdown syntax (no ###, **, bullets, etc.). Use simple paragraphs.
 Be concise (4-5 sentences max). Remember: macro score reflects 6-12 month outlook, NOT current conditions."""
         
         return await self.generate_ai_reasoning(results, prompt)

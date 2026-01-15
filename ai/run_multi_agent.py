@@ -191,7 +191,7 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
         
         # Print executive summary
         print("\n" + "="*80)
-        print("📌 EXECUTIVE SUMMARY")
+        print("[EXECUTIVE SUMMARY]")
         print("="*80)
         
         integrator_output = results["agent_results"].get("Integrator", {})
@@ -207,7 +207,7 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
             print("\nTOP PRIORITY ACTIONS:")
             for i, action in enumerate(integrator_results.get("action_priorities", [])[:5], 1):
                 print(f"  {i}. {action.get('action')}")
-                print(f"     → {action.get('rationale')}")
+                print(f"     > {action.get('rationale')}")
             
             risk = integrator_results.get("risk_assessment", {})
             print(f"\nRISK ASSESSMENT: {risk.get('overall_risk', 'UNKNOWN')}")

@@ -3,37 +3,37 @@
   
   "popular_metrics": {
     "description": "Mainstream economic indicators - well-established, widely-followed metrics",
-    "total_weight_in_final_score": 0.55,
+    "total_weight_in_final_score": 0.45,
     "individual_weights": {
-      "gdp_growth": 0.088,
+      "gdp_growth": 0.04,
       "unemployment": 0.118,
       "cpi_inflation": 0.088,
-      "ppi_inflation": 0.132,
-      "fed_funds_rate": 0.074,
+      "ppi_inflation": 0.16,
+      "fed_funds_rate": 0.02,
       "treasury_10y": 0.074,
-      "sp500_performance": 0.103,
-      "ism_manufacturing": 0.103,
-      "ism_services": 0.074,
-      "retail_sales": 0.059,
-      "consumer_confidence": 0.088
+      "sp500_performance": 0.05,
+      "manufacturing_employment": 0.08,
+      "jobless_claims": 0.10,
+      "retail_sales": 0.03,
+      "consumer_confidence": 0.13
     }
   },
   
   "alternative_metrics": {
     "description": "Alternative indicators - less mainstream but valuable forward-looking signals",
-    "total_weight_in_final_score": 0.45,
+    "total_weight_in_final_score": 0.55,
     "individual_weights": {
-      "yield_curve": 0.145,
-      "m2_growth": 0.101,
-      "high_yield_spreads": 0.116,
-      "leading_economic_index": 0.130,
-      "sahm_rule": 0.116,
+      "yield_curve": 0.12,
+      "m2_growth": 0.03,
+      "high_yield_spreads": 0.20,
+      "leading_economic_index": 0.22,
+      "sahm_rule": 0.15,
       "dollar_index": 0.058,
-      "architecture_billings": 0.072,
-      "copper_prices": 0.087,
-      "luxury_sales": 0.043,
-      "gold_treasury_ratio": 0.058,
-      "corporate_debt_gdp": 0.072
+      "building_permits": 0.07,
+      "copper_prices": 0.05,
+      "luxury_sales": 0.03,
+      "gold_treasury_ratio": 0.03,
+      "corporate_debt_gdp": 0.06
     }
   },
   
@@ -51,7 +51,40 @@
     "description": "Confidence score adjustments based on agreement between popular and alternative metrics",
     "high_agreement_bonus": 5,
     "low_agreement_penalty": -5,
-    "agreement_threshold": 10
+    "agreement_threshold": 10,
+    "crisis_multipliers": {
+      "credit_stress_cliff": {
+        "high_yield_spreads_threshold": 5.0,
+        "lei_threshold": 25,
+        "multiplier": 0.80,
+        "description": "Applied when HY spreads > 5% AND LEI score < 25 (credit stress cliff)"
+      },
+      "recession_detector": {
+        "multiplier": 0.75,
+        "threshold_metrics": 2,
+        "triggers": [
+          "sahm_rule > 0.4",
+          "leading_economic_index < 30",
+          "jobless_claims +10% YoY",
+          "consumer_confidence -10% YoY"
+        ],
+        "description": "Applied when 2+ triggers activate (recession warning)"
+      },
+      "inflation_confidence_combo": {
+        "cpi_threshold": 3.0,
+        "confidence_decline_threshold": 10.0,
+        "multiplier": 0.85,
+        "description": "Applied when CPI > 3% AND Consumer Confidence down >10% YoY (stagflation risk)"
+      },
+      "recovery_detector": {
+        "lei_score_threshold": 50,
+        "sahm_rule_safe_threshold": 50,
+        "hy_spreads_threshold": 65,
+        "alternative_score_threshold": 60,
+        "boost_amount": 0.10,
+        "description": "Applied when LEI strong + Sahm safe + spreads stable + alternatives > 60 (bull run entry)"
+      }
+    }
   },
   
   "notes": {

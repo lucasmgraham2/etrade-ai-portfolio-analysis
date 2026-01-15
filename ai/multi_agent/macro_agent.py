@@ -27,6 +27,7 @@ class MacroAgent(BaseAgent):
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__("Macro", config)
         self.api_keys = config.get("api_keys", {}) if config else {}
+        self.analysis_date = config.get("analysis_date") if config else None
         
         # Load weights configuration
         self.weights_config = self._load_weights_config()
@@ -35,8 +36,8 @@ class MacroAgent(BaseAgent):
         popular_weights = self.weights_config["popular_metrics"]["individual_weights"]
         alternative_weights = self.weights_config["alternative_metrics"]["individual_weights"]
         
-        self.popular_analyzer = PopularMetricsAnalyzer(self.api_keys, popular_weights)
-        self.alternative_analyzer = AlternativeMetricsAnalyzer(self.api_keys, alternative_weights)
+        self.popular_analyzer = PopularMetricsAnalyzer(self.api_keys, popular_weights, self.analysis_date)
+        self.alternative_analyzer = AlternativeMetricsAnalyzer(self.api_keys, alternative_weights, self.analysis_date)
         
         # Get category weights for final combination
         self.popular_weight = self.weights_config["popular_metrics"]["total_weight_in_final_score"]
@@ -89,18 +90,25 @@ class MacroAgent(BaseAgent):
                 popular_results, alternative_results
             )
             
+            # Detect market regime
+            regime = self._detect_market_regime(
+                final_score, popular_results, alternative_results
+            )
+            
             # Generate insights and recommendations
             insights = self._generate_insights(popular_results, alternative_results, final_score)
             recommendations = self._generate_recommendations(final_score)
-            summary = self._create_summary(final_score, popular_results, alternative_results)
+            summary = self._create_summary(final_score, popular_results, alternative_results, regime)
             
             self.log("="*60)
             self.log(f"FINAL CONFIDENCE SCORE: {final_score['score']}/100 ({final_score['direction'].upper()})")
+            self.log(f"MARKET REGIME: {regime['regime'].upper()} - {regime['interpretation']}")
             self.log("="*60)
             
             return {
                 "summary": summary,
                 "confidence_score": final_score,
+                "market_regime": regime,
                 "popular_metrics": popular_results,
                 "alternative_metrics": alternative_results,
                 "insights": insights,
@@ -123,6 +131,8 @@ class MacroAgent(BaseAgent):
     ) -> Dict[str, Any]:
         """
         Calculate final confidence score combining popular and alternative metrics
+        Applies crisis detection multipliers for recession/credit stress warnings
+        Applies recovery detection boost for bull run entry signals
         
         Returns:
             Dictionary with final score, direction, and analysis
@@ -145,11 +155,35 @@ class MacroAgent(BaseAgent):
             final_score += thresholds["high_agreement_bonus"]
             agreement_level = "high"
         elif agreement > 20:
-            # Low agreement - reduce confidence slightly
-            final_score += thresholds["low_agreement_penalty"]
-            agreement_level = "low"
+            # Large divergence - need to check if crisis active before applying recovery logic
+            # First, run crisis detectors to see if any crisis flags are active
+            _, preliminary_flags = self._apply_crisis_multipliers(
+                popular_results, alternative_results
+            )
+            crisis_detected = any([
+                preliminary_flags.get("credit_stress_cliff", False),
+                preliminary_flags.get("recession_detector", False),
+                preliminary_flags.get("inflation_confidence_combo", False)
+            ])
+            
+            # If alternatives >> popular AND alternatives > 60 AND NO crisis, it's recovery entry
+            if alternative_score > popular_score and alternative_score > 60 and not crisis_detected:
+                # Recovery entry detected - boost confidence instead of penalizing
+                final_score += 8  # Boost for forward-looking recovery signal
+                agreement_level = "high_divergence_recovery"
+            else:
+                # Traditional caution on divergence or crisis override
+                final_score += thresholds["low_agreement_penalty"]
+                agreement_level = "low"
         else:
             agreement_level = "moderate"
+        
+        # Apply crisis detection multipliers AND recovery boost
+        multiplier_factors, crisis_flags = self._apply_crisis_multipliers(
+            popular_results, alternative_results
+        )
+        
+        final_score = final_score * multiplier_factors
         
         # Ensure score stays within bounds
         final_score = max(0, min(100, final_score))
@@ -171,6 +205,10 @@ class MacroAgent(BaseAgent):
                 "level": agreement_level,
                 "difference": round(agreement, 1),
                 "note": self._get_agreement_note(agreement_level, popular_score, alternative_score)
+            },
+            "crisis_detection": {
+                "multiplier_applied": multiplier_factors,
+                "flags": crisis_flags
             }
         }
     
@@ -198,15 +236,245 @@ class MacroAgent(BaseAgent):
         else:
             return "BEARISH", "Very Bearish - Strong negative signals across metrics"
     
+    def _apply_crisis_multipliers(
+        self,
+        popular_results: Dict[str, Any],
+        alternative_results: Dict[str, Any]
+    ) -> tuple:
+        """
+        Apply crisis detection multipliers to identify recession/credit stress conditions.
+        
+        Returns:
+            Tuple of (multiplier_factor, crisis_flags_dict)
+        """
+        multiplier = 1.0
+        flags = {
+            "credit_stress_cliff": False,
+            "recession_detector": False,
+            "inflation_confidence_combo": False,
+            "recovery_detector": False
+        }
+        
+        multipliers_config = self.weights_config["confidence_adjustments"]["crisis_multipliers"]
+        
+        # Extract metric values for analysis
+        pop_breakdown = {item["metric"]: item for item in popular_results["composite_score"]["breakdown"]}
+        alt_breakdown = {item["metric"]: item for item in alternative_results["composite_score"]["breakdown"]}
+        pop_data = popular_results["raw_data"]
+        alt_data = alternative_results["raw_data"]
+        
+        # CRISIS DETECTOR 1: Credit Stress Cliff
+        # Triggers when HY spreads > 5% AND LEI < 25
+        hy_score = alt_breakdown.get("high_yield_spreads", {}).get("score", 100)
+        lei_score = alt_breakdown.get("leading_economic_index", {}).get("score", 100)
+        
+        if hy_score < 50 and lei_score < 30:  # Both indicate stress
+            multiplier *= multipliers_config["credit_stress_cliff"]["multiplier"]
+            flags["credit_stress_cliff"] = True
+            self.log(f"CREDIT STRESS CLIFF DETECTED: HY Spreads score={hy_score:.1f}, LEI score={lei_score:.1f}", "WARNING")
+        
+        # CRISIS DETECTOR 2: Recession Detector
+        # Triggers when 2+ of the following:
+        # - Sahm Rule > 0.4
+        # - LEI < 30
+        # - Jobless Claims +10% YoY
+        # - Consumer Confidence -10% YoY
+        recession_triggers = 0
+        sahm_score = alt_breakdown.get("sahm_rule", {}).get("score", 60)
+        if sahm_score < 50:  # Elevated
+            recession_triggers += 1
+        
+        lei_score = alt_breakdown.get("leading_economic_index", {}).get("score", 100)
+        if lei_score < 30:
+            recession_triggers += 1
+        
+        jobless_score = pop_breakdown.get("jobless_claims", {}).get("score", 50)
+        if jobless_score < 40:  # Deteriorating
+            recession_triggers += 1
+        
+        consumer_conf_score = pop_breakdown.get("consumer_confidence", {}).get("score", 50)
+        if consumer_conf_score < 40:  # Declining sharply
+            recession_triggers += 1
+        
+        if recession_triggers >= 2:
+            multiplier *= multipliers_config["recession_detector"]["multiplier"]
+            flags["recession_detector"] = True
+            self.log(f"RECESSION WARNING: {recession_triggers} recession indicators triggered", "WARNING")
+        
+        # CRISIS DETECTOR 3: Inflation + Confidence Collapse (Stagflation)
+        # Triggers when CPI > 3% AND Consumer Confidence down >10% YoY
+        cpi_score = pop_breakdown.get("cpi_inflation", {}).get("score", 50)
+        cpi_data = pop_data.get("cpi", {})
+        cpi_yoy = cpi_data.get("yoy_change_pct", 0)
+        
+        conf_data = pop_data.get("consumer_confidence", {})
+        conf_yoy = conf_data.get("yoy_change_pct", 0)
+        
+        if cpi_yoy > 3.0 and conf_yoy < -10.0:
+            multiplier *= multipliers_config["inflation_confidence_combo"]["multiplier"]
+            flags["inflation_confidence_combo"] = True
+            self.log(f"STAGFLATION RISK: CPI +{cpi_yoy:.1f}% YoY, Confidence {conf_yoy:.1f}% YoY", "WARNING")
+        
+        # RECOVERY DETECTOR: Bull Run Entry Signal
+        # Triggers when LEI strong + Sahm safe + HY spreads stable + alternatives > 60
+        # BUT only if NO crisis flags are active (stagflation, recession, credit stress)
+        recovery_config = multipliers_config["recovery_detector"]
+        alt_score = alternative_results["composite_score"]["score"]
+        
+        crisis_active = flags["credit_stress_cliff"] or flags["recession_detector"] or flags["inflation_confidence_combo"]
+        
+        lei_recovery = lei_score >= recovery_config["lei_score_threshold"]
+        sahm_safe = sahm_score >= recovery_config["sahm_rule_safe_threshold"]
+        hy_stable = hy_score >= recovery_config["hy_spreads_threshold"]
+        alt_bullish = alt_score >= recovery_config["alternative_score_threshold"]
+        
+        if lei_recovery and sahm_safe and hy_stable and alt_bullish and not crisis_active:
+            boost = 1.0 + recovery_config["boost_amount"]
+            multiplier *= boost
+            flags["recovery_detector"] = True
+            self.log(f"RECOVERY DETECTOR ACTIVE: LEI={lei_score:.0f}, Sahm={sahm_score:.0f}, HY={hy_score:.0f}, Alt Score={alt_score:.0f}", "INFO")
+        
+        return multiplier, flags
+
+    
     def _get_agreement_note(self, agreement_level: str, popular: float, alternative: float) -> str:
         """Generate note about agreement between metric categories"""
         if agreement_level == "high":
             return f"Strong consensus between popular ({popular:.1f}) and alternative ({alternative:.1f}) metrics increases confidence"
+        elif agreement_level == "high_divergence_recovery":
+            return f"Leading indicators ({alternative:.1f}) ahead of traditional metrics ({popular:.1f}) - bull run entry signal"
         elif agreement_level == "low":
             return f"Divergence between popular ({popular:.1f}) and alternative ({alternative:.1f}) metrics suggests caution"
         else:
             return f"Moderate agreement between popular ({popular:.1f}) and alternative ({alternative:.1f}) metrics"
     
+    def _detect_market_regime(
+        self,
+        final_score: Dict[str, Any],
+        popular_results: Dict[str, Any],
+        alternative_results: Dict[str, Any]
+    ) -> Dict[str, str]:
+        """
+        Detect current market regime based on score, agreement, and crisis flags.
+        
+        Regimes:
+        - CRASH/CRISIS: Credit stress cliff or recession detected, very low scores (<35)
+        - PEAK/INFLECTION: High agreement + very bullish OR stagflation warning + high alt score
+        - TROUGH/RECOVERY: Large divergence (alt >> pop) + recovery detector + 55-65 range
+        - MID-RALLY: Sustained divergence with climbing score (55-70), no crisis
+        - PEAK_STRENGTH: High agreement + very bullish (>70) + no crisis warnings
+        """
+        score = final_score["score"]
+        direction = final_score["direction"]
+        agreement = final_score["agreement"]
+        crisis = final_score["crisis_detection"]
+        
+        popular_score = final_score["components"]["popular_metrics_score"]
+        alternative_score = final_score["components"]["alternative_metrics_score"]
+        agreement_diff = agreement["difference"]
+        
+        # Check for crisis flags
+        has_crisis = any([
+            crisis["flags"].get("credit_stress_cliff", False),
+            crisis["flags"].get("recession_detector", False),
+            crisis["flags"].get("inflation_confidence_combo", False)
+        ])
+        
+        # REGIME 1: CRASH/CRISIS
+        if has_crisis and score < 35:
+            return {
+                "regime": "crash",
+                "interpretation": "Market crisis - credit stress, recession, or major confidence collapse",
+                "action": "REDUCE RISK - De-risk portfolio, raise cash",
+                "confidence": "HIGH"
+            }
+        
+        # REGIME 2: PEAK/INFLECTION
+        # High agreement at bullish levels OR stagflation warning blocking recovery
+        if has_crisis and score >= 45 and score < 55:
+            return {
+                "regime": "inflection",
+                "interpretation": "Peak inflection point - warning signals present despite bullish metrics",
+                "action": "REBALANCE - Reduce exposure, lock in gains",
+                "confidence": "HIGH"
+            }
+        
+        # REGIME 3: TROUGH/RECOVERY ENTRY
+        # Large divergence with recovery detector active, OR approaching recovery (high alt score with bearish pop)
+        if agreement_diff > 20 and not has_crisis:
+            if alternative_score > 60 and crisis["flags"].get("recovery_detector", False):
+                return {
+                    "regime": "trough_recovery",
+                    "interpretation": "Bull run entry point - leading indicators surging while traditional metrics lag",
+                    "action": "ACCUMULATE - Buy weakness, increase equity exposure",
+                    "confidence": "HIGH"
+                }
+            elif alternative_score > 65 and popular_score < 45 and score >= 45:
+                # Recovery approaching - alternatives very strong, populars weak, but stabilizing
+                return {
+                    "regime": "trough_recovery",
+                    "interpretation": "Bull run entry point - leading indicators surging while traditional metrics lag",
+                    "action": "ACCUMULATE - Buy weakness, increase equity exposure",
+                    "confidence": "MEDIUM"
+                }
+        
+        # REGIME 4: MID-RALLY
+        # Sustained divergence (alt >> pop) with score climbing, no crisis, OR moderate divergence with bullish score
+        if not has_crisis and score >= 55 and score < 70:
+            if agreement_diff > 15 and alternative_score > 60:
+                # Clear divergence mid-rally
+                return {
+                    "regime": "mid_rally",
+                    "interpretation": "Continuation rally - leading indicators sustaining advance",
+                    "action": "HOLD/ADD - Ride the trend, add on dips",
+                    "confidence": "HIGH"
+                }
+            elif agreement["level"] == "moderate" and score >= 60:
+                # Moderate divergence but bullish - transition into full rally
+                return {
+                    "regime": "mid_rally",
+                    "interpretation": "Rally strengthening - traditional metrics catching up to leading indicators",
+                    "action": "HOLD/ADD - Ride the trend, add on dips",
+                    "confidence": "MEDIUM"
+                }
+        
+        # REGIME 5: PEAK_STRENGTH
+        # High agreement + very bullish + no crisis
+        if agreement["level"] == "high" and score >= 70 and not has_crisis:
+            return {
+                "regime": "peak_strength",
+                "interpretation": "Peak market euphoria - all signals aligned bullish, elevated valuation risk",
+                "action": "PROFIT TAKE - Consider partial profits, increase discipline",
+                "confidence": "MEDIUM"
+            }
+        
+        # REGIME 6: NEUTRAL/TRANSITION
+        # Moderate agreement or mixed signals
+        if 40 <= score < 55 and not has_crisis:
+            return {
+                "regime": "neutral_transition",
+                "interpretation": "Transition period - mixed signals, direction unclear",
+                "action": "WAIT - Wait for clarity, maintain balanced positioning",
+                "confidence": "MEDIUM"
+            }
+        
+        # REGIME 7: BEARISH_CAUTION
+        # Bearish without full crisis
+        if score < 40 and not has_crisis:
+            return {
+                "regime": "bearish_caution",
+                "interpretation": "Bearish environment - economic headwinds present",
+                "action": "DEFENSIVE - Reduce equity, increase defensives",
+                "confidence": "MEDIUM"
+            }
+        
+        # DEFAULT
+        return {
+            "regime": "neutral",
+            "interpretation": f"Neutral sentiment - Score {score}/100, {direction}",
+            "action": "MAINTAIN - Hold current allocation",
+            "confidence": "LOW"
+        }
     def _generate_insights(
         self,
         popular_results: Dict[str, Any],
@@ -511,21 +779,122 @@ class MacroAgent(BaseAgent):
         self,
         final_score: Dict[str, Any],
         popular_results: Dict[str, Any],
-        alternative_results: Dict[str, Any]
+        alternative_results: Dict[str, Any],
+        regime: Dict[str, Any]
     ) -> str:
-        """Create concise summary of macro analysis"""
+        """Create detailed summary of macro analysis"""
         score = final_score["score"]
         direction = final_score["direction"]
         popular_score = final_score["components"]["popular_metrics_score"]
         alt_score = final_score["components"]["alternative_metrics_score"]
         agreement = final_score["agreement"]["level"]
+        agreement_diff = final_score["agreement"]["difference"]
         
-        summary = (
-            f"MACRO CONFIDENCE SCORE: {score}/100 ({direction}) | "
-            f"Popular Metrics: {popular_score} | Alternative Metrics: {alt_score} | "
-            f"Agreement: {agreement.upper()} | "
-            f"Medium-term outlook (3-12 months): {final_score['interpretation']}"
-        )
+        # Get crisis flags
+        crisis_flags = final_score.get("crisis_detection", {}).get("flags", {})
         
-        return summary
+        # Build crisis detection section
+        crisis_lines = []
+        crisis_active = False
+        
+        if crisis_flags.get("credit_stress_cliff"):
+            crisis_lines.append("  [!] CREDIT STRESS CLIFF: HY bond spreads elevated or spiking rapidly")
+            crisis_active = True
+        else:
+            crisis_lines.append("  [OK] Credit Stress: Not detected")
+        
+        if crisis_flags.get("recession_detector"):
+            crisis_lines.append("  [!] RECESSION RISK: 2+ recession indicators triggered")
+            crisis_active = True
+        else:
+            crisis_lines.append("  [OK] Recession Risk: Not detected")
+        
+        if crisis_flags.get("inflation_confidence_combo"):
+            # Get actual CPI and confidence numbers if available
+            pop_data = popular_results.get("raw_data", {})
+            cpi_data = pop_data.get("cpi", {})
+            conf_data = pop_data.get("consumer_confidence", {})
+            cpi_yoy = cpi_data.get("yoy_change_pct", 0)
+            conf_yoy = conf_data.get("yoy_change_pct", 0)
+            crisis_lines.append(f"  [!] STAGFLATION WARNING: CPI +{cpi_yoy:.1f}% YoY, Confidence {conf_yoy:.1f}% YoY")
+            crisis_active = True
+        else:
+            crisis_lines.append("  [OK] Stagflation Risk: Not detected")
+        
+        if crisis_flags.get("recovery_detector"):
+            crisis_lines.append("  [+] RECOVERY DETECTOR ACTIVE: Bull run entry signal detected")
+        
+        # Build metric breakdown - top 3 from each category
+        popular_breakdown = popular_results["composite_score"]["breakdown"]
+        alt_breakdown = alternative_results["composite_score"]["breakdown"]
+        
+        # Sort by score and get top 3
+        popular_sorted = sorted(popular_breakdown, key=lambda x: x["score"], reverse=True)
+        alt_sorted = sorted(alt_breakdown, key=lambda x: x["score"], reverse=True)
+        
+        popular_lines = []
+        for i, item in enumerate(popular_sorted[:3], 1):
+            metric_name = item['metric'].replace('_', ' ').title()
+            metric_score = item['score']
+            status = "Strong" if metric_score >= 60 else "Weak" if metric_score < 40 else "Moderate"
+            popular_lines.append(f"  {i}. {metric_name}: {metric_score:.0f}/100 ({status})")
+        
+        alt_lines = []
+        for i, item in enumerate(alt_sorted[:3], 1):
+            metric_name = item['metric'].replace('_', ' ').title()
+            metric_score = item['score']
+            status = "Strong" if metric_score >= 60 else "Weak" if metric_score < 40 else "Moderate"
+            alt_lines.append(f"  {i}. {metric_name}: {metric_score:.0f}/100 ({status})")
+        
+        # Build agreement analysis
+        if agreement_diff > 20:
+            if alt_score > popular_score:
+                agreement_note = (
+                    f"Leading indicators ({alt_score:.1f}) are significantly ahead of traditional metrics ({popular_score:.1f}) "
+                    f"by {agreement_diff:.1f} points - suggests early stage strength not yet reflected in backward-looking data."
+                )
+            else:
+                agreement_note = (
+                    f"Traditional metrics ({popular_score:.1f}) are ahead of leading indicators ({alt_score:.1f}) "
+                    f"by {agreement_diff:.1f} points - caution warranted as forward signals weaker."
+                )
+        elif agreement_diff <= 10:
+            agreement_note = (
+                f"High agreement between popular ({popular_score:.1f}) and alternative ({alt_score:.1f}) metrics "
+                f"increases confidence in direction."
+            )
+        else:
+            agreement_note = (
+                f"Moderate divergence between popular ({popular_score:.1f}) and alternative ({alt_score:.1f}) metrics - "
+                f"mixed signals suggest transitional phase."
+            )
+        
+        # Assemble full summary
+        summary_parts = [
+            f"CONFIDENCE SCORE: {score:.1f}/100 ({direction.upper()})",
+            f"Popular Metrics: {popular_score:.1f} | Alternative Metrics: {alt_score:.1f} | Agreement: {agreement.upper()}",
+            "",
+            f"[FORWARD OUTLOOK: 6-12 month projection]",
+            "",
+            f"MARKET REGIME: {regime.get('regime', 'unknown').upper()}",
+            f"  Interpretation: {regime.get('interpretation', 'N/A')}",
+            f"  Recommended Action: {regime.get('action', 'N/A')}",
+            f"  Confidence: {regime.get('confidence', 'N/A')}",
+            "",
+            "CRISIS DETECTION:",
+            "\n".join(crisis_lines),
+            "",
+            "METRIC BREAKDOWN:",
+            f"Popular Metrics (Lagging indicators, 45% weight):",
+            "\n".join(popular_lines),
+            "",
+            f"Alternative Metrics (Leading indicators, 55% weight):",
+            "\n".join(alt_lines),
+            "",
+            f"AGREEMENT ANALYSIS: {agreement_note}",
+            "",
+            f"MEDIUM-TERM OUTLOOK: {final_score['interpretation']}"
+        ]
+        
+        return "\n".join(summary_parts)
 

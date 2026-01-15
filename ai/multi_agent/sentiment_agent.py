@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import asyncio
 import aiohttp
 import json
+import os
 from .base_agent import BaseAgent
 
 # NLP for sentiment analysis
@@ -92,96 +93,77 @@ class SentimentAgent(BaseAgent):
         Returns:
             Sentiment analysis results
         """
-        # Validate context
-        if not self.validate_context(context, ["portfolio"]):
-            return {"error": "Missing portfolio data"}
-        
-        portfolio = context["portfolio"]
-        symbols = portfolio.get("summary", {}).get("unique_symbols", [])
-        
-        if not symbols:
-            return {"error": "No symbols found in portfolio"}
-        
-        self.log(f"Analyzing sentiment for {len(symbols)} symbols: {', '.join(symbols)}")
-        
-        # Analyze news sentiment only
-        news_sentiment = await self._analyze_news_sentiment(symbols)
-        
-        # Aggregate sentiment scores from news
-        overall_sentiment = self._aggregate_sentiment(symbols, news_sentiment)
-        
-        # Generate insights
-        insights = self._generate_insights(overall_sentiment)
-        
-        results = {
-            "summary": self._create_summary(overall_sentiment),
-            "overall_sentiment": overall_sentiment,
-            "news_sentiment": news_sentiment,
-            "insights": insights,
-            "recommendations": self._generate_recommendations(overall_sentiment),
-            "data_sources": ["news"],
-            "analysis_period_days": self.lookback_days
-        }
-        
-        # Generate AI reasoning
-        ai_reasoning = await self._generate_sentiment_ai_reasoning(results, symbols)
-        results["ai_reasoning"] = ai_reasoning
-        
-        return results
+        try:
+            # Validate context
+            if not self.validate_context(context, ["portfolio"]):
+                return {"error": "Missing portfolio data"}
+            
+            portfolio = context["portfolio"]
+            symbols = portfolio.get("summary", {}).get("unique_symbols", [])
+            
+            if not symbols:
+                return {"error": "No symbols found in portfolio"}
+            
+            self.log(f"Analyzing sentiment for {len(symbols)} symbols: {', '.join(symbols)}")
+            
+            # Analyze news sentiment only
+            news_sentiment = await self._analyze_news_sentiment(symbols)
+            
+            # Aggregate sentiment scores from news
+            overall_sentiment = self._aggregate_sentiment(symbols, news_sentiment)
+            
+            # Generate insights
+            insights = self._generate_insights(overall_sentiment)
+            
+            results = {
+                "summary": self._create_summary(overall_sentiment),
+                "overall_sentiment": overall_sentiment,
+                "news_sentiment": news_sentiment,
+                "insights": insights,
+                "recommendations": self._generate_recommendations(overall_sentiment),
+                "data_sources": ["news"],
+                "analysis_period_days": self.lookback_days
+            }
+            
+            # Generate AI reasoning
+            ai_reasoning = await self._generate_sentiment_ai_reasoning(results, symbols)
+            results["ai_reasoning"] = ai_reasoning
+            
+            return results
+        except Exception as e:
+            import traceback
+            self.log(f"Sentiment analysis error: {str(e)}", "ERROR")
+            self.log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+            # Return empty results structure with error
+            return {
+                "error": f"Sentiment analysis failed: {str(e)}",
+                "overall_sentiment": {},
+                "summary": "Sentiment analysis unavailable"
+            }
+    
     
     async def _analyze_news_sentiment(self, symbols: List[str]) -> Dict[str, Any]:
         """
-        Analyze news sentiment for portfolio symbols
+        Analyze news sentiment for portfolio symbols using NewsAPI
         
-        Uses APIs like:
-        - Alpha Vantage News Sentiment (primary, reliable)
-        - NewsAPI (supplemental when quota available)
-        - Finnhub (free alternative)
-        
-        Workarounds for free-tier limitations:
-        - Prioritize high-value positions for NewsAPI quota
-        - Dynamic weight adjustment based on data availability
-        - Finnhub as backup for additional coverage
+        Note: Alpha Vantage NEWS_SENTIMENT endpoint is deprecated and no longer used.
+        Alpha Vantage is still used for sector performance data in the sector agent.
         """
         self.log("Fetching news sentiment...")
         
-        has_av = "alpha_vantage" in self.api_keys
         has_newsapi = "newsapi" in self.api_keys
         has_finnhub = "finnhub" in self.api_keys
         
-        # Alpha Vantage is primary and most reliable
-        if has_av:
-            av_data = await self._fetch_alpha_vantage_news(symbols)
-            
-            # Try supplemental sources if available
-            supplemental_data = None
-            if has_newsapi:
-                newsapi_data = await self._fetch_newsapi_data(symbols)
-                # Only use if we got meaningful data (not just empty due to quota)
-                if newsapi_data and self._has_meaningful_data(newsapi_data):
-                    supplemental_data = newsapi_data
-            
-            # Finnhub as additional free source
-            if has_finnhub and not supplemental_data:
-                finnhub_data = await self._fetch_finnhub_news(symbols)
-                if finnhub_data and self._has_meaningful_data(finnhub_data):
-                    supplemental_data = finnhub_data
-            
-            # Merge if we have supplemental data, otherwise use AV alone
-            if supplemental_data:
-                return self._merge_news_sources(symbols, av_data, supplemental_data)
-            else:
-                self.log("Using Alpha Vantage only (supplemental sources unavailable)", "INFO")
-                return av_data
-        
-        # Fallbacks if no Alpha Vantage
+        # Use NewsAPI as primary source
         if has_newsapi:
             return await self._fetch_newsapi_data(symbols)
+        
+        # Finnhub as fallback
         if has_finnhub:
             return await self._fetch_finnhub_news(symbols)
 
-        # Simulated only if no keys provided
-        self.log("No news API key found, using simulated data", "WARNING")
+        # No news API available
+        self.log("No news API key found", "WARNING")
         return {
             "source": "none",
             "symbols": {s: self._insufficient("no_sources") for s in symbols},
@@ -198,39 +180,10 @@ class SentimentAgent(BaseAgent):
         # Consider meaningful if at least one symbol has articles or non-zero score
         for symbol_info in symbols_data.values():
             if isinstance(symbol_info, dict):
-                if symbol_info.get("count", 0) > 0 or abs(symbol_info.get("score", 0)) > 0.05:
+                score = symbol_info.get("score", 0) or 0  # Handle None scores
+                if symbol_info.get("count", 0) > 0 or abs(score) > 0.05:
                     return True
         return False
-    
-    async def _fetch_alpha_vantage_news(self, symbols: List[str]) -> Dict[str, Any]:
-        """Fetch news sentiment from Alpha Vantage API"""
-        api_key = self.api_keys.get("alpha_vantage")
-        
-        symbol_sentiments = {}
-        async with aiohttp.ClientSession() as session:
-            for symbol in symbols:
-                try:
-                    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={symbol}&apikey={api_key}"
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            sentiment_score = self._parse_alpha_vantage_sentiment(data)
-                            symbol_sentiments[symbol] = sentiment_score
-                        else:
-                            self.log(f"Failed to fetch news for {symbol}: {response.status}", "WARNING")
-                            symbol_sentiments[symbol] = {"score": None, "label": "INSUFFICIENT_DATA"}
-                except Exception as e:
-                    self.log(f"Error fetching news for {symbol}: {str(e)}", "ERROR")
-                    symbol_sentiments[symbol] = {"score": None, "label": "INSUFFICIENT_DATA"}
-                    
-                # Rate limiting
-                await asyncio.sleep(0.5)
-        
-        return {
-            "source": "alpha_vantage",
-            "symbols": symbol_sentiments,
-            "timestamp": datetime.now().isoformat()
-        }
     
     async def _fetch_finnhub_news(self, symbols: List[str]) -> Dict[str, Any]:
         """Fetch news from Finnhub (free tier: 60 calls/min)"""
@@ -465,18 +418,14 @@ class SentimentAgent(BaseAgent):
         if not articles:
             return self._insufficient("no_articles")
 
-        # Always use NLP if available (transformer model is more accurate than keywords)
         if NLP_AVAILABLE and sentiment_analyzer:
             self.log(f"Using NLP transformer for {len(articles)} articles", "DEBUG")
             nlp_result = self._analyze_with_nlp(articles)
             self.log(f"NLP analysis complete: {nlp_result.get('articles_analyzed', 0)} articles analyzed, score {nlp_result.get('score', 0):.3f}", "INFO")
             return nlp_result
         else:
-            if not self._nlp_warning_logged:
-                self.log("NLP not available, transformer model not loaded - using keyword fallback", "WARNING")
-                self._nlp_warning_logged = True
-            # Only use keywords as absolute fallback when NLP is unavailable
-            return self._analyze_with_keywords(articles)
+            self.log("NLP transformers not available", "WARNING")
+            return {"score": None, "label": "INSUFFICIENT_DATA", "articles_analyzed": len(articles)}
     
     def _analyze_with_nlp(self, articles: List[Dict]) -> Dict[str, Any]:
         """Use transformer-based NLP for sentiment analysis on up to 50 articles"""
@@ -607,80 +556,15 @@ class SentimentAgent(BaseAgent):
         
         return aggregated
 
-    def _merge_news_sources(
-        self,
-        symbols: List[str],
-        av_data: Dict[str, Any],
-        supplemental_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Merge Alpha Vantage (pre-computed sentiment) with supplemental NLP analysis."""
-        av_symbols = av_data.get("symbols", {}) if av_data else {}
-        supp_symbols = supplemental_data.get("symbols", {}) if supplemental_data else {}
-
-        merged = {}
-        for symbol in symbols:
-            av = av_symbols.get(symbol, {})
-            supp = supp_symbols.get(symbol, {})
-
-            av_score = av.get("score")
-            supp_score = supp.get("score")
-            av_has = av.get("count", 0) > 0 or (av_score is not None and abs(av_score) > 0.01)
-            supp_has = supp.get("count", 0) > 0 or (supp_score is not None and abs(supp_score) > 0.01)
-            
-            if av_has and supp_has:
-                score = av_score * 0.6 + supp_score * 0.4
-            elif av_has:
-                score = av_score
-            elif supp_has:
-                score = supp_score
-            else:
-                score = None
-
-            if score is None:
-                label = "INSUFFICIENT_DATA"
-            elif score > 0.12:
-                label = "bullish"
-            elif score < -0.12:
-                label = "bearish"
-            else:
-                label = "neutral"
-
-            methods_used = []
-            if av.get("count", 0) > 0:
-                methods_used.append("alpha_vantage")
-            if supp.get("method") == "nlp":
-                methods_used.append("nlp")
-            elif supp.get("count", 0) > 0:
-                methods_used.append(supp_source.split("_")[-1] if "_" in supp_source else supp_source)
-
-            merged[symbol] = {
-                "score": score,
-                "label": label,
-                "count": (av.get("count", 0) or 0) + (supp.get("count", 0) or 0),
-                "method": ", ".join(methods_used) if methods_used else "unknown",
-                "articles_analyzed": supp.get("articles_analyzed", 0),
-                "weight_method": weight_method,
-                "components": {
-                    "alpha_vantage": av,
-                    supp_source: supp,
-                },
-            }
-
-        return {
-            "source": f"merged_av_{supp_source}",
-            "symbols": merged,
-            "timestamp": datetime.now().isoformat(),
-        }
-    
     def _generate_insights(self, sentiment_data: Dict[str, Any]) -> List[str]:
         """Generate actionable insights from sentiment analysis"""
         insights = []
         
-        # Identify most bullish symbols
+        # Identify most bullish symbols (with valid scores)
         bullish_symbols = [
             (symbol, data["overall_score"])
             for symbol, data in sentiment_data.items()
-            if data["sentiment"] == "bullish"
+            if data["sentiment"] == "bullish" and data["overall_score"] is not None
         ]
         bullish_symbols.sort(key=lambda x: x[1], reverse=True)
         
@@ -691,11 +575,11 @@ class SentimentAgent(BaseAgent):
                 f"(score: {top_bullish[1]:.2f})"
             )
         
-        # Identify most bearish symbols
+        # Identify most bearish symbols (with valid scores)
         bearish_symbols = [
             (symbol, data["overall_score"])
             for symbol, data in sentiment_data.items()
-            if data["sentiment"] == "bearish"
+            if data["sentiment"] == "bearish" and data["overall_score"] is not None
         ]
         bearish_symbols.sort(key=lambda x: x[1])
         
@@ -733,31 +617,36 @@ class SentimentAgent(BaseAgent):
             # Handle INSUFFICIENT_DATA case
             if sentiment == "INSUFFICIENT_DATA":
                 recommendations.append(
-                    f"Monitor {symbol}: insufficient news data (0 articles analyzed); unable to determine sentiment"
+                    f"Monitor {symbol}: insufficient news data ({articles_analyzed} articles analyzed); unable to determine sentiment"
                 )
             # More lenient thresholds to give actionable recommendations
             elif sentiment == "bullish":
-                if confidence > 0.5:  # Slightly higher gate to reduce noise
+                if score is None or confidence <= 0.5:  # Handle None scores
+                    recommendations.append(
+                        f"Hold {symbol}: mildly positive news sentiment, monitor for confirmation"
+                    )
+                else:
                     recommendations.append(
                         f"BUY bias for {symbol}: news sentiment bullish (score {score:.2f}, news {news_score:.2f}); consider adding/averaging up"
                     )
-                else:
-                    recommendations.append(
-                        f"Hold {symbol}: mildly positive news sentiment (score {score:.2f}), monitor for confirmation"
-                    )
             elif sentiment == "bearish":
-                if confidence > 0.5:  # Slightly higher gate to reduce noise
+                if score is None or confidence <= 0.5:  # Handle None scores
+                    recommendations.append(
+                        f"Hold {symbol}: mildly negative news sentiment, monitor for weakness"
+                    )
+                else:
                     recommendations.append(
                         f"SELL bias for {symbol}: news sentiment bearish (score {score:.2f}, news {news_score:.2f}); consider trimming"
                     )
+            elif sentiment == "neutral":
+                if score is not None:
+                    recommendations.append(
+                        f"Hold {symbol}: neutral news sentiment (score {score:.2f}), watch for catalysts"
+                    )
                 else:
                     recommendations.append(
-                        f"Hold {symbol}: slightly negative news sentiment (score {score:.2f}), monitor for deterioration"
+                        f"Hold {symbol}: neutral news sentiment, watch for catalysts"
                     )
-            elif sentiment == "neutral":
-                recommendations.append(
-                    f"Hold {symbol}: neutral news sentiment (score {score:.2f}), watch for catalysts"
-                )
         
         return recommendations
     

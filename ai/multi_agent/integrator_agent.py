@@ -32,98 +32,105 @@ class IntegratorAgent(BaseAgent):
         Returns:
             Integrated analysis with actionable recommendations
         """
-        self.log("Integrating multi-agent analysis...")
-        
-        # Validate all required data is present
-        required_keys = ["portfolio", "Sentiment", "Macro", "Sector"]
-        if not self.validate_context(context, required_keys):
-            return {"error": "Missing required agent outputs"}
-        
-        # Extract data from context
-        portfolio = context["portfolio"]
-        
-        # Get results from other agents - handle potential errors
-        sentiment_results = context.get("Sentiment", {})
-        if not sentiment_results or "error" in sentiment_results:
-            return {"error": "Sentiment analysis failed or returned no data"}
-        
-        macro_results = context.get("Macro", {})
-        if not macro_results or "error" in macro_results:
-            return {"error": "Macro analysis failed or returned no data"}
-        
-        sector_results = context.get("Sector", {})
-        if not sector_results or "error" in sector_results:
-            return {"error": "Sector analysis failed or returned no data"}
-        
-        # Get portfolio positions
-        positions = self._extract_positions(portfolio)
-        
-        # Analyze each position
-        position_analyses = self._analyze_positions(
-            positions, sentiment_results, macro_results, sector_results
-        )
-        
-        # Generate portfolio-level recommendations
-        portfolio_recommendations = self._generate_portfolio_recommendations(
-            portfolio, position_analyses, macro_results, sector_results
-        )
-        
-        # Prioritize actions
-        action_priorities = self._prioritize_actions(position_analyses, portfolio_recommendations)
-        
-        # Calculate risk assessment
-        risk_assessment = self._assess_portfolio_risk(
-            portfolio, position_analyses, macro_results
-        )
+        try:
+            self.log("Integrating multi-agent analysis...")
+            
+            # Validate all required data is present
+            required_keys = ["portfolio", "Sentiment", "Macro", "Sector"]
+            if not self.validate_context(context, required_keys):
+                return {"error": "Missing required agent outputs"}
+            
+            # Extract data from context
+            portfolio = context["portfolio"]
+            
+            # Get results from other agents - handle potential errors
+            sentiment_results = context.get("Sentiment", {})
+            if not sentiment_results or "error" in sentiment_results:
+                return {"error": "Sentiment analysis failed or returned no data"}
+            
+            macro_results = context.get("Macro", {})
+            if not macro_results or "error" in macro_results:
+                return {"error": "Macro analysis failed or returned no data"}
+            
+            sector_results = context.get("Sector", {})
+            if not sector_results or "error" in sector_results:
+                return {"error": "Sector analysis failed or returned no data"}
+            
+            # Get portfolio positions
+            positions = self._extract_positions(portfolio)
+            
+            # Analyze each position
+            position_analyses = self._analyze_positions(
+                positions, sentiment_results, macro_results, sector_results
+            )
+            
+            # Generate portfolio-level recommendations
+            portfolio_recommendations = self._generate_portfolio_recommendations(
+                portfolio, position_analyses, macro_results, sector_results
+            )
+            
+            # Prioritize actions
+            action_priorities = self._prioritize_actions(position_analyses, portfolio_recommendations)
+            
+            # Calculate risk assessment
+            risk_assessment = self._assess_portfolio_risk(
+                portfolio, position_analyses, macro_results
+            )
 
-        # Bucket recommendations for quick view
-        recommendation_buckets = {"buy": [], "hold": [], "sell": []}
-        for p in position_analyses:
-            rec = p.get("recommendation")
-            symbol = p.get("symbol")
-            entry = f"{symbol} ({rec})"
-            if rec in ["STRONG_BUY", "BUY"]:
-                recommendation_buckets["buy"].append(entry)
-            elif rec in ["HOLD"]:
-                recommendation_buckets["hold"].append(entry)
-            elif rec in ["SELL", "TAKE_PROFIT", "CUT_LOSS", "STRONG_SELL"]:
-                recommendation_buckets["sell"].append(entry)
-        
-        portfolio_recommendations["recommendation_buckets"] = recommendation_buckets
-        
-        # Generate executive summary
-        executive_summary = self._create_executive_summary(
-            portfolio, position_analyses, portfolio_recommendations,
-            macro_results, sentiment_results, sector_results
-        )
-        
-        results = {
-            "summary": executive_summary,
-            "position_analyses": position_analyses,
-            "portfolio_recommendations": portfolio_recommendations,
-            "action_priorities": action_priorities,
-            "risk_assessment": risk_assessment,
-            "recommendation_buckets": recommendation_buckets,
-            "recommendations": [
-                f"[Priority {a['priority']}] {a['action']}" + (f" — {a['rationale']}" if a.get('rationale') else "")
-                for a in action_priorities
-            ],
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # Generate AI reasoning
-        ai_reasoning = await self._generate_integrator_ai_reasoning(
-            results, position_analyses, macro_results, sentiment_results, sector_results
-        )
-        results["ai_reasoning"] = ai_reasoning
-        
-        # Generate new position suggestions
-        new_position_suggestions = await self._suggest_new_positions(
-            portfolio, position_analyses, macro_results, sector_results, risk_assessment
-        )
-        results["new_position_suggestions"] = new_position_suggestions
-        
-        return results
+            # Bucket recommendations for quick view
+            recommendation_buckets = {"buy": [], "hold": [], "sell": []}
+            for p in position_analyses:
+                rec = p.get("recommendation")
+                symbol = p.get("symbol")
+                entry = f"{symbol} ({rec})"
+                if rec in ["STRONG_BUY", "BUY"]:
+                    recommendation_buckets["buy"].append(entry)
+                elif rec in ["HOLD"]:
+                    recommendation_buckets["hold"].append(entry)
+                elif rec in ["SELL", "TAKE_PROFIT", "CUT_LOSS", "STRONG_SELL"]:
+                    recommendation_buckets["sell"].append(entry)
+            
+            portfolio_recommendations["recommendation_buckets"] = recommendation_buckets
+            
+            # Generate executive summary
+            executive_summary = self._create_executive_summary(
+                portfolio, position_analyses, portfolio_recommendations,
+                macro_results, sentiment_results, sector_results
+            )
+            
+            results = {
+                "summary": executive_summary,
+                "position_analyses": position_analyses,
+                "portfolio_recommendations": portfolio_recommendations,
+                "action_priorities": action_priorities,
+                "risk_assessment": risk_assessment,
+                "recommendation_buckets": recommendation_buckets,
+                "recommendations": [
+                    f"[Priority {a['priority']}] {a['action']}" + (f" — {a['rationale']}" if a.get('rationale') else "")
+                    for a in action_priorities
+                ],
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Generate AI reasoning
+            ai_reasoning = await self._generate_integrator_ai_reasoning(
+                results, position_analyses, macro_results, sentiment_results, sector_results
+            )
+            results["ai_reasoning"] = ai_reasoning
+            
+            # Generate new position suggestions
+            new_position_suggestions = await self._suggest_new_positions(
+                portfolio, position_analyses, macro_results, sector_results, risk_assessment
+            )
+            results["new_position_suggestions"] = new_position_suggestions
+            
+            return results
+        except Exception as e:
+            import traceback
+            self.log(f"Integrator error: {str(e)}", "ERROR")
+            self.log(f"Traceback: {traceback.format_exc()}", "DEBUG")
+            return {"error": f"Integration failed: {str(e)}"}
+    
     
     def _extract_positions(self, portfolio: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract all positions from portfolio"""
@@ -154,12 +161,14 @@ class IntegratorAgent(BaseAgent):
         overall_sentiment = sentiment.get("overall_sentiment", {})
         
         # Get macro data
-        macro_favorability = macro.get("market_favorability", {})
-        macro_score = macro_favorability.get("score", 50)
+        confidence_score = macro.get("confidence_score", {})
+        macro_score = confidence_score.get("score", 50) if isinstance(confidence_score, dict) else 50
         
-        # Get sector predictions
+        # Get sector predictions (handle case where it might not be a list)
         sector_predictions = sector.get("sector_predictions", [])
-        sector_dict = {p["sector"]: p for p in sector_predictions}
+        if not isinstance(sector_predictions, list):
+            sector_predictions = []
+        sector_dict = {p["sector"]: p for p in sector_predictions if isinstance(p, dict) and "sector" in p}
         
         # Get portfolio sectors
         portfolio_sectors = sector.get("portfolio_sectors", {})
@@ -174,7 +183,7 @@ class IntegratorAgent(BaseAgent):
             
             # Get sentiment for this symbol
             symbol_sentiment = overall_sentiment.get(symbol, {})
-            sentiment_score = symbol_sentiment.get("overall_score", 0)
+            sentiment_score = symbol_sentiment.get("overall_score") or 0  # Handle None values
             sentiment_label = symbol_sentiment.get("sentiment", "neutral")
             
             # Determine sector
@@ -231,11 +240,17 @@ class IntegratorAgent(BaseAgent):
         
         return analyses
     
-    def _get_position_sector(self, symbol: str, portfolio_sectors: Dict[str, List[str]]) -> str:
+    def _get_position_sector(self, symbol: str, portfolio_sectors: Dict[str, Any]) -> str:
         """Find which sector a symbol belongs to"""
-        for sector, symbols in portfolio_sectors.items():
-            if symbol in symbols:
-                return sector
+        for sector, value in portfolio_sectors.items():
+            # Handle both dict (sector: {symbols: [...]}) and list/set structures
+            if isinstance(value, dict) and "symbols" in value:
+                if symbol in value.get("symbols", []):
+                    return sector
+            elif isinstance(value, (list, set, tuple)):
+                if symbol in value:
+                    return sector
+            # Skip non-iterable values (floats, etc.)
         return "Other"
     
     def _calculate_composite_score(
@@ -319,8 +334,8 @@ class IntegratorAgent(BaseAgent):
         # Confidence is higher when signals align
         signals = []
         
-        # Sentiment signal
-        if abs(sentiment_score) > 0.3:
+        # Sentiment signal - handle None/0 scores
+        if sentiment_score and abs(sentiment_score) > 0.3:
             signals.append(abs(sentiment_score))
         
         # Macro signal
@@ -783,7 +798,7 @@ class IntegratorAgent(BaseAgent):
 
         if buys or holds or sells:
             summary_parts.append(
-                "Actions → "
+                "Actions: "
                 f"Buy: {', '.join(buys[:5]) or 'none'}; "
                 f"Hold: {', '.join(holds[:5]) or 'none'}; "
                 f"Sell/Trim: {', '.join(sells[:5]) or 'none'}."
@@ -807,11 +822,60 @@ class IntegratorAgent(BaseAgent):
         holds = [p['symbol'] for p in position_analyses if p.get('recommendation') == 'HOLD'][:3]
         
         macro_score = macro.get('confidence_score', {}).get('score', 50)
+        macro_regime = macro.get('market_regime', {}).get('regime', 'neutral')
+        macro_direction = macro.get('confidence_score', {}).get('direction', 'stable')
+        crisis_flags = macro.get('confidence_score', {}).get('crisis_detection', {}).get('flags', {})
+        agreement_level = macro.get('confidence_score', {}).get('agreement', {}).get('level', 'moderate')
         risk_level = results.get('risk_assessment', {}).get('overall_risk', 'MEDIUM')
         
-        prompt = f"""Synthesize this multi-agent portfolio analysis into actionable investment guidance.
+        # Build crisis context
+        active_crises = []
+        if crisis_flags.get('credit_stress_cliff'):
+            active_crises.append('CREDIT STRESS (HY spreads deteriorating)')
+        if crisis_flags.get('recession_detector'):
+            active_crises.append('RECESSION RISK (2+ recession indicators triggered)')
+        if crisis_flags.get('inflation_confidence_combo'):
+            active_crises.append('STAGFLATION WARNING (CPI>3% + confidence collapse)')
+        crisis_text = ', '.join(active_crises) if active_crises else 'None'
+        
+        # Build macro interpretation guidance
+        macro_context = f"""
+MACRO SCORE INTERPRETATION (CRITICAL - READ CAREFULLY):
+Score: {macro_score}/100 ({macro_direction}, {agreement_level} agreement)
+Regime: {macro_regime.upper()}
+Active Crisis Flags: {crisis_text}
 
-Macro Score: {macro_score}/100
+WHAT THIS SCORE MEANS (6-12 MONTH FORWARD OUTLOOK):
+- The macro score is a FORWARD-LOOKING indicator (6-12 months ahead), NOT a current market assessment
+- Score is weighted: 55% alternative metrics (leading indicators like LEI, spreads, Sahm Rule) + 45% popular metrics (lagging indicators like GDP, CPI, unemployment)
+- Higher alternative vs popular score means leading indicators are ahead of traditional metrics
+
+SCORE RANGES:
+- 0-20: CRASH/CRISIS - Severe credit stress, recession, or confidence collapse. REDUCE RISK immediately.
+- 20-40: BEARISH/INFLECTION - Economic headwinds present or peak inflection with warning signals. DEFENSIVE positioning.
+- 40-55: NEUTRAL/TROUGH - Transition period OR bull run entry point if leading indicators surge. WAIT for clarity or ACCUMULATE if recovery signals.
+- 55-70: MID-RALLY - Continuation rally with leading indicators sustaining advance. HOLD/ADD on dips.
+- 70-85: PEAK STRENGTH - All signals aligned bullish, elevated valuation risk. PROFIT TAKE partially.
+
+CRISIS FLAGS MEANING:
+- Credit Stress Cliff: HY bond spreads >400bps or spiking +50bps = credit markets freezing, REDUCE RISK
+- Recession Detector: 2+ indicators (Sahm Rule, LEI<30, Jobless Claims, Consumer Confidence) = downturn confirmed, GO DEFENSIVE
+- Stagflation Warning: CPI>3% + confidence down >10% YoY = inflation + weak growth combo, REDUCE EQUITY exposure
+
+RECOVERY DETECTOR (Bull Run Entry):
+- Triggers when LEI>50 + Sahm Rule safe + HY spreads stable + alternative score>60 + NO crisis flags
+- This signals bull run entry point - ACCUMULATE equity exposure despite bearish traditional metrics
+
+AGREEMENT INTERPRETATION:
+- High Agreement: Popular and alternative metrics aligned, higher confidence in direction
+- High Divergence (Alt >> Pop): Leading indicators ahead of lagging - often bull run entry signal
+- Low Agreement: Metrics conflicting, suggests CAUTION and WAIT for clarity
+"""
+        
+        prompt = f"""{macro_context}
+
+Now synthesize this multi-agent portfolio analysis into actionable investment guidance using the macro interpretation above.
+
 Risk Level: {risk_level}
 
 Position Recommendations:
@@ -823,12 +887,12 @@ Top Action Priorities:
 {json.dumps(results.get('action_priorities', [])[:3], indent=2)}
 
 Provide:
-1. Overall portfolio positioning assessment
+1. Overall portfolio positioning assessment (considering the FORWARD-LOOKING macro outlook)
 2. How sentiment + macro + sector signals align or conflict
 3. Top 2-3 specific actions to take now
-4. Key risk factors to monitor
+4. Key risk factors to monitor (especially crisis flags if active)
 
-Be concise (4-5 sentences max)."""
+Be concise (4-5 sentences max). Remember: macro score reflects 6-12 month outlook, NOT current conditions."""
         
         return await self.generate_ai_reasoning(results, prompt)
     

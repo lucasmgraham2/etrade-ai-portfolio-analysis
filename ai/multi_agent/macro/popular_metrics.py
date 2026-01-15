@@ -24,17 +24,19 @@ class PopularMetricsAnalyzer:
     - Consumer Confidence Index
     """
     
-    def __init__(self, api_keys: Dict[str, str], weights: Dict[str, float]):
+    def __init__(self, api_keys: Dict[str, str], weights: Dict[str, float], analysis_date: str = None):
         """
         Initialize Popular Metrics Analyzer
         
         Args:
             api_keys: Dictionary with 'fred' and 'alpha_vantage' keys
             weights: Dictionary of metric weights from config
+            analysis_date: Optional date for historical analysis (YYYY-MM-DD)
         """
         self.fred_api_key = api_keys.get("fred")
         self.alpha_vantage_key = api_keys.get("alpha_vantage")
         self.weights = weights
+        self.analysis_date = analysis_date
         
         if not self.fred_api_key:
             raise ValueError("FRED API key is required for popular metrics")
@@ -119,6 +121,8 @@ class PopularMetricsAnalyzer:
             f"sort_order=desc&"
             f"limit=24"
         )
+        if self.analysis_date:
+            url += f"&observation_end={self.analysis_date}"
         last_err = None
         for attempt in range(2):
             try:

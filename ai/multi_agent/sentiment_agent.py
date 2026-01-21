@@ -623,29 +623,29 @@ class SentimentAgent(BaseAgent):
             elif sentiment == "bullish":
                 if score is None or confidence <= 0.5:  # Handle None scores
                     recommendations.append(
-                        f"Hold {symbol}: mildly positive news sentiment, monitor for confirmation"
+                        f"Hold {symbol}: mildly positive news sentiment, monitor for confirmation ({articles_analyzed} articles analyzed)"
                     )
                 else:
                     recommendations.append(
-                        f"BUY bias for {symbol}: news sentiment bullish (score {score:.2f}, news {news_score:.2f}); consider adding/averaging up"
+                        f"BUY bias for {symbol}: news sentiment bullish (score {score:.2f}, news {news_score:.2f}); consider adding/averaging up ({articles_analyzed} articles analyzed)"
                     )
             elif sentiment == "bearish":
                 if score is None or confidence <= 0.5:  # Handle None scores
                     recommendations.append(
-                        f"Hold {symbol}: mildly negative news sentiment, monitor for weakness"
+                        f"Hold {symbol}: mildly negative news sentiment, monitor for weakness ({articles_analyzed} articles analyzed)"
                     )
                 else:
                     recommendations.append(
-                        f"SELL bias for {symbol}: news sentiment bearish (score {score:.2f}, news {news_score:.2f}); consider trimming"
+                        f"SELL bias for {symbol}: news sentiment bearish (score {score:.2f}, news {news_score:.2f}); consider trimming ({articles_analyzed} articles analyzed)"
                     )
             elif sentiment == "neutral":
                 if score is not None:
                     recommendations.append(
-                        f"Hold {symbol}: neutral news sentiment (score {score:.2f}), watch for catalysts"
+                        f"Hold {symbol}: neutral news sentiment (score {score:.2f}), watch for catalysts ({articles_analyzed} articles analyzed)"
                     )
                 else:
                     recommendations.append(
-                        f"Hold {symbol}: neutral news sentiment, watch for catalysts"
+                        f"Hold {symbol}: neutral news sentiment, watch for catalysts ({articles_analyzed} articles analyzed)"
                     )
         
         return recommendations

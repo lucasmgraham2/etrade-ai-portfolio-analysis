@@ -260,7 +260,6 @@ class PopularMetricsAnalyzer:
             f"https://www.alphavantage.co/query?"
             f"function=TIME_SERIES_DAILY&"
             f"symbol=SPY&"
-            f"outputsize=full&"
             f"apikey={self.alpha_vantage_key}"
         )
         last_err = None
@@ -270,21 +269,42 @@ class PopularMetricsAnalyzer:
                     async with session.get(url) as response:
                         if response.status == 200:
                             data = await response.json()
+                            
+                            # Check for API error messages
+                            if "Error Message" in data:
+                                raise ValueError(f"Alpha Vantage error: {data['Error Message']}")
+                            if "Note" in data:
+                                raise ValueError(f"Alpha Vantage rate limit: {data['Note']}")
+                            if "Information" in data:
+                                # Premium feature message - continue with available data
+                                print(f"[Popular Metrics] Using compact data (100 days): {data['Information'][:100]}...")
+                            
                             daily_data = data.get("Time Series (Daily)", {})
                             if not daily_data:
-                                raise ValueError("No S&P 500 data available")
+                                raise ValueError(f"No S&P 500 data available. API response keys: {list(data.keys())}")
                             dates = sorted(daily_data.keys(), reverse=True)
                             current_price = float(daily_data[dates[0]]["4. close"])
                             month_ago_price = float(daily_data[dates[21]]["4. close"]) if len(dates) > 21 else current_price
                             three_month_price = float(daily_data[dates[63]]["4. close"]) if len(dates) > 63 else current_price
-                            year_ago_price = float(daily_data[dates[252]]["4. close"]) if len(dates) > 252 else current_price
+                            
+                            # For 1Y return: use earliest available data point if less than 252 days
+                            # Free tier only gives ~100 days, so approximate 1Y from 3M
+                            if len(dates) > 252:
+                                year_ago_price = float(daily_data[dates[252]]["4. close"])
+                                one_year_return = ((current_price - year_ago_price) / year_ago_price * 100)
+                            else:
+                                # Estimate 1Y from 3M (multiply by 4 with decay factor)
+                                three_month_return = ((current_price - three_month_price) / three_month_price * 100)
+                                one_year_return = three_month_return * 3.5  # Conservative annualization
+                            
                             return {
                                 "name": "S&P 500",
                                 "current": current_price,
                                 "1m_return": ((current_price - month_ago_price) / month_ago_price * 100),
                                 "3m_return": ((current_price - three_month_price) / three_month_price * 100),
-                                "1y_return": ((current_price - year_ago_price) / year_ago_price * 100),
-                                "date": dates[0]
+                                "1y_return": one_year_return,
+                                "date": dates[0],
+                                "estimated_1y": len(dates) <= 252  # Flag if 1Y is estimated
                             }
                         if response.status == 429:
                             last_err = RuntimeError("Alpha Vantage rate limit hit (429)")

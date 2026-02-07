@@ -96,7 +96,7 @@ class MacroAgent(BaseAgent):
             )
             
             # Generate insights and recommendations
-            insights = self._generate_insights(popular_results, alternative_results, final_score)
+            insights = self._generate_insights(popular_results, alternative_results, final_score, regime)
             recommendations = self._generate_recommendations(final_score)
             summary = self._create_summary(final_score, popular_results, alternative_results, regime)
             
@@ -479,7 +479,8 @@ class MacroAgent(BaseAgent):
         self,
         popular_results: Dict[str, Any],
         alternative_results: Dict[str, Any],
-        final_score: Dict[str, Any]
+        final_score: Dict[str, Any],
+        regime: Dict[str, Any]
     ) -> List[str]:
         """Generate detailed insights from the analysis"""
         insights = []
@@ -498,6 +499,35 @@ class MacroAgent(BaseAgent):
         insights.append(f"Confidence Score: {score}/100 - {direction}")
         insights.append(f"Interpretation: {interpretation}")
         insights.append(f"Timeframe: Medium-term (3-12 months)")
+        insights.append(f"Regime: {regime.get('regime', 'unknown').upper()} - {regime.get('interpretation', 'N/A')}")
+        insights.append(f"Suggested stance: {regime.get('action', 'N/A')} (confidence: {regime.get('confidence', 'N/A')})")
+
+        # Add context on agreement and crisis flags for direction depth
+        popular_score = final_score["components"]["popular_metrics_score"]
+        alt_score = final_score["components"]["alternative_metrics_score"]
+        agreement = final_score["agreement"]["level"]
+        agreement_diff = final_score["agreement"]["difference"]
+        crisis_flags = final_score.get("crisis_detection", {}).get("flags", {})
+        active_flags = [
+            name.replace("_", " ")
+            for name, active in crisis_flags.items()
+            if active
+        ]
+        if alt_score > popular_score:
+            insights.append(
+                f"Leading indicators are ahead of lagging metrics by {agreement_diff:.1f} points, which can signal early-cycle strength."
+            )
+        elif popular_score > alt_score:
+            insights.append(
+                f"Lagging indicators are ahead of leading metrics by {agreement_diff:.1f} points, which can signal late-cycle risk."
+            )
+        else:
+            insights.append("Leading and lagging indicators are closely aligned, reinforcing the directional signal.")
+
+        if active_flags:
+            insights.append(f"Active crisis flags: {', '.join(active_flags)} (risk-off bias until cleared).")
+        else:
+            insights.append("No crisis flags active; risk posture can follow the score trend.")
         insights.append("")
         
         # Agreement analysis
@@ -508,139 +538,14 @@ class MacroAgent(BaseAgent):
         insights.append(f"{agreement['note']}")
         insights.append("")
         
-        # Detailed popular metrics review
-        insights.append(f"{'='*80}")
-        insights.append(f"POPULAR METRICS DETAILED REVIEW")
-        insights.append(f"Category Score: {final_score['components']['popular_metrics_score']}/100")
-        insights.append(f"Weight in Final Score: {final_score['components']['popular_weight']*100:.0f}%")
-        insights.append(f"{'='*80}")
-        insights.append("")
-        
-        popular_breakdown = popular_results["composite_score"]["breakdown"]
-        popular_raw_data = popular_results["raw_data"]
-        
-        # Sort by metric name for organized presentation
-        sorted_popular = sorted(popular_breakdown, key=lambda x: x["metric"])
-        
-        for item in sorted_popular:
-            metric_name = item['metric']
-            metric_title = metric_name.replace('_', ' ').title()
-            metric_score = item['score']
-            metric_weight = item['weight']
-            contribution = item['weighted_contribution']
-            
-            # Determine sentiment indicator
-            if metric_score >= 70:
-                sentiment = "🟢 VERY BULLISH"
-            elif metric_score >= 60:
-                sentiment = "🟢 BULLISH"
-            elif metric_score >= 55:
-                sentiment = "🟡 SLIGHTLY BULLISH"
-            elif metric_score >= 45:
-                sentiment = "🟡 NEUTRAL"
-            elif metric_score >= 40:
-                sentiment = "🟠 SLIGHTLY BEARISH"
-            elif metric_score >= 30:
-                sentiment = "🔴 BEARISH"
-            else:
-                sentiment = "🔴 VERY BEARISH"
-            
-            insights.append(f"┌─ {metric_title}")
-            insights.append(f"│  Score: {metric_score:.1f}/100 {sentiment}")
-            insights.append(f"│  Weight: {metric_weight*100:.1f}% | Contribution: {contribution:.2f} points")
-            insights.append(f"│  Analysis: {item['reasoning']}")
-            
-            # Add raw data details if available
-            raw = popular_raw_data.get(metric_name, {})
-            if raw and not isinstance(raw, Exception):
-                insights.append(f"│  Data Details:")
-                if 'current' in raw:
-                    insights.append(f"│    • Current Value: {raw['current']:.2f}")
-                if 'yoy_change_pct' in raw:
-                    insights.append(f"│    • YoY Change: {raw['yoy_change_pct']:+.2f}%")
-                if 'trend' in raw:
-                    insights.append(f"│    • Trend: {raw['trend'].title()}")
-                if '3m_return' in raw:
-                    insights.append(f"│    • 3-Month Return: {raw['3m_return']:+.2f}%")
-                if '1y_return' in raw:
-                    insights.append(f"│    • 1-Year Return: {raw['1y_return']:+.2f}%")
-                if 'date' in raw:
-                    insights.append(f"│    • Data Date: {raw['date']}")
-            
-            insights.append(f"└─")
-            insights.append("")
-        
-        # Detailed alternative metrics review
-        insights.append(f"{'='*80}")
-        insights.append(f"ALTERNATIVE METRICS DETAILED REVIEW")
-        insights.append(f"Category Score: {final_score['components']['alternative_metrics_score']}/100")
-        insights.append(f"Weight in Final Score: {final_score['components']['alternative_weight']*100:.0f}%")
-        insights.append(f"{'='*80}")
-        insights.append("")
-        
-        alt_breakdown = alternative_results["composite_score"]["breakdown"]
-        alt_raw_data = alternative_results["raw_data"]
-        
-        sorted_alt = sorted(alt_breakdown, key=lambda x: x["metric"])
-        
-        for item in sorted_alt:
-            metric_name = item['metric']
-            metric_title = metric_name.replace('_', ' ').title()
-            metric_score = item['score']
-            metric_weight = item['weight']
-            contribution = item['weighted_contribution']
-            
-            # Determine sentiment indicator
-            if metric_score >= 70:
-                sentiment = "🟢 VERY BULLISH"
-            elif metric_score >= 60:
-                sentiment = "🟢 BULLISH"
-            elif metric_score >= 55:
-                sentiment = "🟡 SLIGHTLY BULLISH"
-            elif metric_score >= 45:
-                sentiment = "🟡 NEUTRAL"
-            elif metric_score >= 40:
-                sentiment = "🟠 SLIGHTLY BEARISH"
-            elif metric_score >= 30:
-                sentiment = "🔴 BEARISH"
-            else:
-                sentiment = "🔴 VERY BEARISH"
-            
-            insights.append(f"┌─ {metric_title}")
-            insights.append(f"│  Score: {metric_score:.1f}/100 {sentiment}")
-            insights.append(f"│  Weight: {metric_weight*100:.1f}% | Contribution: {contribution:.2f} points")
-            insights.append(f"│  Analysis: {item['reasoning']}")
-            
-            # Add raw data details if available
-            raw = alt_raw_data.get(metric_name, {})
-            if raw and not isinstance(raw, Exception):
-                insights.append(f"│  Data Details:")
-                if 'current' in raw:
-                    insights.append(f"│    • Current Value: {raw['current']:.2f}")
-                if 'inverted' in raw:
-                    insights.append(f"│    • Yield Curve: {'INVERTED [WARNING]' if raw['inverted'] else 'Normal [OK]'}")
-                if '10y_yield' in raw and '2y_yield' in raw:
-                    insights.append(f"│    • 10Y Yield: {raw['10y_yield']:.2f}% | 2Y Yield: {raw['2y_yield']:.2f}%")
-                if 'yoy_change_pct' in raw:
-                    insights.append(f"│    • YoY Change: {raw['yoy_change_pct']:+.2f}%")
-                if 'trend' in raw:
-                    insights.append(f"│    • Trend: {raw['trend'].title()}")
-                if '3m_change_pct' in raw:
-                    insights.append(f"│    • 3-Month Change: {raw['3m_change_pct']:+.2f}%")
-                if '1m_change_pct' in raw:
-                    insights.append(f"│    • 1-Month Change: {raw['1m_change_pct']:+.2f}%")
-                if 'date' in raw:
-                    insights.append(f"│    • Data Date: {raw['date']}")
-            
-            insights.append(f"└─")
-            insights.append("")
-        
         # Summary of strongest and weakest signals
         insights.append(f"{'='*80}")
         insights.append(f"SUMMARY: TOP SIGNALS")
         insights.append(f"{'='*80}")
         insights.append("")
-        
+
+        popular_breakdown = popular_results["composite_score"]["breakdown"]
+        alt_breakdown = alternative_results["composite_score"]["breakdown"]
         all_scores = popular_breakdown + alt_breakdown
         
         insights.append("🟢 TOP 5 BULLISH SIGNALS (Highest Scores):")

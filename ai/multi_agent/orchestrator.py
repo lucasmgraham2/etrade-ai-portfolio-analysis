@@ -322,30 +322,57 @@ class AgentOrchestrator:
                     
                     # Add new position suggestions section
                     new_positions = results.get('new_position_suggestions', {})
-                    if new_positions and new_positions.get('suggestions'):
+                    if new_positions and (
+                        new_positions.get('macro_ideas')
+                        or new_positions.get('sentiment_ideas')
+                        or new_positions.get('sector_ideas')
+                        or new_positions.get('suggestions')
+                    ):
                         report_lines.append("\n" + "-"*80)
-                        report_lines.append("NEW POSITION SUGGESTIONS")
+                        report_lines.append("NEW POSITION IDEAS (OUTSIDE PORTFOLIO)")
                         report_lines.append("-"*80)
-                        
+
                         based_on = new_positions.get('based_on', {})
                         fav_sectors = based_on.get('favorable_sectors', [])
                         macro_score = based_on.get('macro_score', 'N/A')
+                        macro_direction = based_on.get('macro_direction', 'N/A')
+                        sentiment_tilt = based_on.get('sentiment_tilt', 'N/A')
                         risk_level = based_on.get('risk_level', 'N/A')
-                        
+
                         report_lines.append(
                             f"Based on favorable sectors ({', '.join(fav_sectors)}), "
-                            f"macro score ({macro_score}), and {risk_level} risk tolerance:\n"
+                            f"macro score ({macro_score}, {macro_direction}), "
+                            f"sentiment tilt ({sentiment_tilt}), and {risk_level} risk tolerance:\n"
                         )
-                        
-                        for i, suggestion in enumerate(new_positions['suggestions'], 1):
-                            ticker = suggestion.get('ticker', 'N/A')
-                            name = suggestion.get('name', 'N/A')
-                            sector = suggestion.get('sector', 'N/A')
-                            rationale = suggestion.get('rationale', 'N/A')
-                            signal = suggestion.get('signal_strength', 'BUY')
-                            
-                            report_lines.append(f"{i}. {ticker} ({name}) - {sector} [{signal}]")
-                            report_lines.append(f"   Rationale: {rationale}\n")
+
+                        def _append_idea_section(title: str, ideas: List[Dict[str, Any]]):
+                            report_lines.append(f"{title}:")
+                            if not ideas:
+                                report_lines.append("  (No ideas generated)\n")
+                                return
+                            for i, suggestion in enumerate(ideas, 1):
+                                ticker = suggestion.get('ticker', 'N/A')
+                                name = suggestion.get('name', 'N/A')
+                                sector = suggestion.get('sector', 'N/A')
+                                rationale = suggestion.get('rationale', 'N/A')
+                                signal = suggestion.get('signal_strength', 'BUY')
+
+                                report_lines.append(f"  {i}. {ticker} ({name}) - {sector} [{signal}]")
+                                report_lines.append(f"     Rationale: {rationale}")
+                            report_lines.append("")
+
+                        _append_idea_section(
+                            "MACRO-DRIVEN IDEAS",
+                            new_positions.get('macro_ideas', [])
+                        )
+                        _append_idea_section(
+                            "SENTIMENT-DRIVEN IDEAS",
+                            new_positions.get('sentiment_ideas', [])
+                        )
+                        _append_idea_section(
+                            "SECTOR-DRIVEN IDEAS",
+                            new_positions.get('sector_ideas', [])
+                        )
             else:
                 report_lines.append(f"\nErrors: {', '.join(agent_result['errors'])}")
         

@@ -149,12 +149,12 @@ async def run_analysis(portfolio_filepath: str = None, parallel: bool = True):
                 except Exception as e:
                     print(f"   Warning: Could not move {stray.name}: {e}")
         
-        # Keep the last 3 reports instead of deleting everything
-        print("Cleaning up old analysis files (keep last 3)...")
+        # Keep only the latest report, delete older ones
+        print("Cleaning up old analysis files (keep last 1)...")
 
         def _prune(pattern: str):
             files = sorted(output_dir.glob(pattern), key=os.path.getmtime, reverse=True)
-            for old_file in files[3:]:
+            for old_file in files[1:]:
                 try:
                     old_file.unlink()
                     print(f"   Deleted: {old_file.name}")

@@ -36,9 +36,9 @@ class IntegratorAgent(BaseAgent):
             self.log("Integrating multi-agent analysis...")
             
             # Validate all required data is present
-            required_keys = ["portfolio", "Sentiment", "Macro", "Sector"]
+            required_keys = ["portfolio", "Sentiment", "Sector"]
             if not self.validate_context(context, required_keys):
-                return {"error": "Missing required agent outputs"}
+                return {"error": "Missing required agent outputs (portfolio, sentiment, sector)"}
             
             # Extract data from context
             portfolio = context["portfolio"]
@@ -48,9 +48,19 @@ class IntegratorAgent(BaseAgent):
             if not sentiment_results or "error" in sentiment_results:
                 return {"error": "Sentiment analysis failed or returned no data"}
             
+            # Macro is optional - if it fails, use defaults
             macro_results = context.get("Macro", {})
             if not macro_results or "error" in macro_results:
-                return {"error": "Macro analysis failed or returned no data"}
+                self.log("Macro analysis not available, using neutral defaults", "WARNING")
+                macro_results = {
+                    "confidence_score": {
+                        "score": 50,
+                        "direction": "NEUTRAL",
+                        "interpretation": "Macro data unavailable - using neutral stance",
+                        "crisis_detection": {"flags": {}}
+                    },
+                    "summary": "Macro analysis unavailable"
+                }
             
             sector_results = context.get("Sector", {})
             if not sector_results or "error" in sector_results:
@@ -120,7 +130,12 @@ class IntegratorAgent(BaseAgent):
             
             # Generate new position suggestions
             new_position_suggestions = await self._suggest_new_positions(
-                portfolio, position_analyses, macro_results, sector_results, risk_assessment
+                portfolio,
+                position_analyses,
+                macro_results,
+                sentiment_results,
+                sector_results,
+                risk_assessment
             )
             results["new_position_suggestions"] = new_position_suggestions
             
@@ -742,15 +757,18 @@ class IntegratorAgent(BaseAgent):
         sentiment: Dict[str, Any],
         sector: Dict[str, Any]
     ) -> str:
-        """Create executive summary of integrated analysis"""
+        """Create executive summary synthesizing macro, sentiment, and sector into actionable insights"""
         
         total_value = portfolio.get("summary", {}).get("total_portfolio_value", 0)
         total_positions = len(position_analyses)
         
-        # Get key metrics
-        macro_score = macro.get("market_favorability", {}).get("score", 50)
-        macro_interp = macro.get("market_favorability", {}).get("interpretation", "neutral")
-
+        # Extract macro data (using correct keys from confidence_score)
+        confidence_score = macro.get("confidence_score", {})
+        macro_score = confidence_score.get("score", 50)
+        macro_direction = confidence_score.get("direction", "neutral")
+        macro_interpretation = confidence_score.get("interpretation", "mixed signals")
+        
+        # Extract sector highlights
         sector_highlights = portfolio_recommendations.get("sector_highlights", {}) or {}
         if not sector_highlights:
             sector_highlights = self._extract_sector_highlights(
@@ -758,53 +776,70 @@ class IntegratorAgent(BaseAgent):
                 sector.get("portfolio_allocation", {})
             )
         
+        # Extract sentiment data
+        overall_sentiment = sentiment.get("overall_sentiment", {})
+        sentiment_scores = [
+            d.get("overall_score")
+            for d in overall_sentiment.values()
+            if d.get("overall_score") is not None
+        ]
+        avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+        bullish_count = sum(1 for d in overall_sentiment.values() if d.get("sentiment") == "bullish")
+        bearish_count = sum(1 for d in overall_sentiment.values() if d.get("sentiment") == "bearish")
+        
+        if avg_sentiment > 0.2:
+            sentiment_label = "bullish"
+        elif avg_sentiment < -0.2:
+            sentiment_label = "bearish"
+        else:
+            sentiment_label = "neutral"
+        
+        # Extract portfolio action summary
         rec_summary = portfolio_recommendations.get("recommendation_summary", {})
         strong_buys = rec_summary.get("strong_buy", 0)
+        buys = rec_summary.get("buy", 0)
+        holds = rec_summary.get("hold", 0)
+        sells = rec_summary.get("sell", 0)
         strong_sells = rec_summary.get("strong_sell", 0)
         
-        # Get top opportunities
-        top_opportunities = [p["symbol"] for p in position_analyses[:3] if p["recommendation"] in ["STRONG_BUY", "BUY"]]
-        top_concerns = [p["symbol"] for p in position_analyses if p["recommendation"] in ["STRONG_SELL", "CUT_LOSS"]][:3]
-
-        rec_buckets = portfolio_recommendations.get("recommendation_buckets") or {}
-        buys = rec_buckets.get("buy", []) if isinstance(rec_buckets, dict) else []
-        holds = rec_buckets.get("hold", []) if isinstance(rec_buckets, dict) else []
-        sells = rec_buckets.get("sell", []) if isinstance(rec_buckets, dict) else []
-        
-        summary_parts = [
-            f"Portfolio value: ${total_value:,.2f} across {total_positions} positions.",
-            f"Macro environment is {macro_interp.replace('_', ' ')} (score: {macro_score}/100).",
-        ]
-
         top_fav_sectors = sector_highlights.get("top_favorable", [])
         least_fav_sectors = sector_highlights.get("least_favorable", [])
-
+        
+        # Build comprehensive summary
+        summary = (
+            f"Portfolio (${total_value:,.0f} across {total_positions} holdings) sits in a {macro_direction.lower()} "
+            f"macro environment (score {macro_score}/100) with {sentiment_label} sentiment ({avg_sentiment:+.2f}). "
+        )
+        
         if top_fav_sectors:
-            top_sector_names = ", ".join([f"{p['sector']} ({p['score']:.1f})" for p in top_fav_sectors])
-            summary_parts.append(f"Top favorable sectors: {top_sector_names}.")
-
-        if least_fav_sectors:
-            low_sector_names = ", ".join([f"{p['sector']} ({p['score']:.1f})" for p in least_fav_sectors])
-            summary_parts.append(f"Not favorable sectors to limit new exposure: {low_sector_names}.")
-        
-        if strong_buys > 0:
-            summary_parts.append(f"{strong_buys} strong buy opportunities identified: {', '.join(top_opportunities[:3])}.")
-        
-        if strong_sells > 0:
-            summary_parts.append(f"{strong_sells} positions recommended for selling: {', '.join(top_concerns[:3])}.")
-        
-        if not strong_buys and not strong_sells:
-            summary_parts.append("Portfolio is well-positioned with mostly hold recommendations.")
-
-        if buys or holds or sells:
-            summary_parts.append(
-                "Actions: "
-                f"Buy: {', '.join(buys[:5]) or 'none'}; "
-                f"Hold: {', '.join(holds[:5]) or 'none'}; "
-                f"Sell/Trim: {', '.join(sells[:5]) or 'none'}."
+            top_names = ", ".join([p['sector'] for p in top_fav_sectors[:2]])
+            summary += (
+                f"The market is being pushed by favorable sector rotation toward {top_names}. "
             )
         
-        return " ".join(summary_parts)
+        if least_fav_sectors:
+            low_names = ", ".join([p['sector'] for p in least_fav_sectors[:2]])
+            summary += (
+                f"Caution warranted in {low_names} which show weakness. "
+            )
+        
+        # Add action recommendations
+        if strong_buys > 0 or strong_sells > 0:
+            summary += f"Key signals: {strong_buys} strong buy and {strong_sells} cut-loss signals in current holdings. "
+        
+        if macro_score > 60 and sentiment_label == "bullish":
+            summary += "Macro tailwinds combined with positive sentiment support increased equity exposure and selective growth positioning. "
+        elif macro_score < 40 or sentiment_label == "bearish":
+            summary += "Mixed macro/sentiment backdrop suggests defensive positioning and reducing concentration risk. "
+        else:
+            summary += "Mixed signals warrant balanced approach with focus on quality and conviction positions. "
+        
+        summary += (
+            f"Consider deploying cash into favorable sectors while trimming {bearish_count} bearish positions. "
+            f"New position ideas are generated below across macro, sentiment, and sector filters."
+        )
+        
+        return summary
     
     async def _generate_integrator_ai_reasoning(
         self,
@@ -902,6 +937,7 @@ Be concise (4-5 sentences max). Remember: macro score reflects 6-12 month outloo
         portfolio: Dict[str, Any],
         position_analyses: List[Dict[str, Any]],
         macro: Dict[str, Any],
+        sentiment: Dict[str, Any],
         sector: Dict[str, Any],
         risk_assessment: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -920,7 +956,26 @@ Be concise (4-5 sentences max). Remember: macro score reflects 6-12 month outloo
         
         # Extract macro stance
         macro_score = macro.get('confidence_score', {}).get('score', 50)
-        macro_outlook = macro.get('confidence_score', {}).get('outlook', 'neutral')
+        macro_direction = macro.get('confidence_score', {}).get('direction', 'neutral')
+        macro_interpretation = macro.get('confidence_score', {}).get('interpretation', 'neutral')
+
+        # Extract sentiment context
+        overall_sentiment = sentiment.get('overall_sentiment', {})
+        sentiment_scores = [
+            d.get('overall_score')
+            for d in overall_sentiment.values()
+            if d.get('overall_score') is not None
+        ]
+        avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+        bullish_count = sum(1 for d in overall_sentiment.values() if d.get('sentiment') == 'bullish')
+        bearish_count = sum(1 for d in overall_sentiment.values() if d.get('sentiment') == 'bearish')
+        insufficient_count = sum(1 for d in overall_sentiment.values() if d.get('sentiment') == 'INSUFFICIENT_DATA')
+        if avg_sentiment > 0.2:
+            sentiment_tilt = 'positive'
+        elif avg_sentiment < -0.2:
+            sentiment_tilt = 'negative'
+        else:
+            sentiment_tilt = 'neutral'
         
         # Extract risk tolerance
         overall_risk = risk_assessment.get('overall_risk', 'MEDIUM')
@@ -930,7 +985,7 @@ Be concise (4-5 sentences max). Remember: macro score reflects 6-12 month outloo
         unfav_sectors_data = [{'sector': p['sector'], 'score': p['prediction_score']} for p in unfavorable_sectors]
         
         # Build detailed prompt with all analysis data
-        prompt = f"""Based on this comprehensive portfolio analysis, suggest 2-5 specific stock tickers or ETFs to BUY as new positions (not currently held).
+        prompt = f"""Based on this comprehensive portfolio analysis, suggest specific stock tickers or ETFs to BUY as new positions (not currently held).
 
 CURRENT PORTFOLIO:
 - Symbols held: {', '.join(current_symbols)}
@@ -938,8 +993,13 @@ CURRENT PORTFOLIO:
 - Total positions: {len(current_symbols)}
 
 MACRO ENVIRONMENT:
-- Confidence score: {macro_score}/100 ({macro_outlook})
+- Confidence score: {macro_score}/100 ({macro_direction})
+- Interpretation: {macro_interpretation}
 - Stance: {'Bullish - favor growth/cyclicals' if macro_score > 60 else 'Bearish - favor defensives' if macro_score < 40 else 'Neutral - balanced approach'}
+
+SENTIMENT CONTEXT (portfolio news-derived):
+- Average sentiment score: {avg_sentiment:.2f} ({sentiment_tilt})
+- Bullish positions: {bullish_count} | Bearish positions: {bearish_count} | Insufficient data: {insufficient_count}
 
 FAVORABLE SECTORS (to prioritize):
 {json.dumps(fav_sectors_data, indent=2)}
@@ -950,19 +1010,14 @@ UNFAVORABLE SECTORS (to avoid):
 RISK TOLERANCE: Match portfolio's {overall_risk} risk profile
 
 Requirements:
-1. Suggest 2-5 tickers (stocks or ETFs)
-2. Focus on favorable sectors identified above
-3. Align with macro stance (growth vs defensive)
+1. Provide THREE sections of ideas: macro-driven, sentiment-driven, and sector-driven
+2. Each section should list 3-5 tickers (stocks or ETFs)
+3. Focus on favorable sectors and align with macro stance (growth vs defensive)
 4. Do NOT suggest any symbols already in portfolio: {', '.join(current_symbols)}
 5. Match {overall_risk} risk tolerance
 6. For each suggestion provide: ticker, company/fund name, sector, and 1-2 sentence rationale
 
-Format your response as a JSON array:
-[
-  {{"ticker": "TICKER", "name": "Company/Fund Name", "sector": "Sector Name", "rationale": "Brief explanation", "signal_strength": "BUY or WATCH"}}
-]
-
-Be specific and actionable. Only suggest real, liquid securities."""
+Format your response as a JSON object with three arrays. Be specific and actionable. Only suggest real, liquid securities."""
         
         try:
             # Call OpenAI for suggestions
@@ -972,28 +1027,203 @@ Be specific and actionable. Only suggest real, liquid securities."""
             
             # Parse JSON response
             import re
-            # Extract JSON array from response (in case there's extra text)
-            json_match = re.search(r'\[\s*\{.*\}\s*\]', response_text, re.DOTALL)
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                suggestions_list = json.loads(json_match.group())
+                try:
+                    suggestions_payload = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    self.log("JSON parsing failed for new position suggestions", level="WARNING")
+                    suggestions_payload = None
             else:
-                # Fallback: try parsing entire response
-                suggestions_list = json.loads(response_text)
-            
-            return {
-                "suggestions": suggestions_list,
-                "count": len(suggestions_list),
-                "based_on": {
-                    "favorable_sectors": [p['sector'] for p in favorable_sectors],
-                    "macro_score": macro_score,
-                    "risk_level": overall_risk
+                suggestions_payload = None
+
+            if suggestions_payload:
+                macro_ideas = []
+                sentiment_ideas = []
+                sector_ideas = []
+                overall_ideas = []
+
+                if isinstance(suggestions_payload, list):
+                    overall_ideas = suggestions_payload
+                elif isinstance(suggestions_payload, dict):
+                    macro_ideas = suggestions_payload.get("macro_ideas", []) or []
+                    sentiment_ideas = suggestions_payload.get("sentiment_ideas", []) or []
+                    sector_ideas = suggestions_payload.get("sector_ideas", []) or []
+                    overall_ideas = suggestions_payload.get("overall_ideas", []) or []
+
+                combined = []
+                for group in [macro_ideas, sentiment_ideas, sector_ideas, overall_ideas]:
+                    for item in group:
+                        if item not in combined:
+                            combined.append(item)
+
+                return {
+                    "suggestions": combined,
+                    "macro_ideas": macro_ideas,
+                    "sentiment_ideas": sentiment_ideas,
+                    "sector_ideas": sector_ideas,
+                    "overall_ideas": overall_ideas,
+                    "count": len(combined),
+                    "based_on": {
+                        "favorable_sectors": [p['sector'] for p in favorable_sectors],
+                        "macro_score": macro_score,
+                        "macro_direction": macro_direction,
+                        "sentiment_tilt": sentiment_tilt,
+                        "risk_level": overall_risk
+                    }
                 }
-            }
-            
         except Exception as e:
-            self.log(f"Error generating new position suggestions: {e}", level="ERROR")
-            return {
-                "suggestions": [],
-                "count": 0,
-                "error": str(e)
-            }
+            self.log(f"Error generating AI position suggestions: {e}", level="WARNING")
+        
+        # FALLBACK: Generate sensible stock ideas when AI fails or times out
+        self.log("Using fallback stock suggestions...", level="INFO")
+        macro_ideas = self._generate_fallback_macro_ideas(macro_score, overall_risk, current_symbols)
+        sentiment_ideas = self._generate_fallback_sentiment_ideas(sentiment_tilt, bearish_count, overall_risk, current_symbols)
+        sector_ideas = self._generate_fallback_sector_ideas(favorable_sectors, overall_risk, current_symbols)
+        
+        combined = []
+        for group in [macro_ideas, sentiment_ideas, sector_ideas]:
+            for item in group:
+                if item not in combined:
+                    combined.append(item)
+        
+        return {
+            "suggestions": combined,
+            "macro_ideas": macro_ideas,
+            "sentiment_ideas": sentiment_ideas,
+            "sector_ideas": sector_ideas,
+            "overall_ideas": [],
+            "count": len(combined),
+            "based_on": {
+                "favorable_sectors": [p['sector'] for p in favorable_sectors],
+                "macro_score": macro_score,
+                "macro_direction": macro_direction,
+                "sentiment_tilt": sentiment_tilt,
+                "risk_level": overall_risk
+            },
+            "note": "Using fallback suggestions - consider running with API key for AI-optimized recommendations"
+        }
+    
+    def _generate_fallback_macro_ideas(self, macro_score: float, risk_level: str, current_symbols: List[str]) -> List[Dict[str, Any]]:
+        """Generate reasonable stock ideas based on macro score when AI unavailable"""
+        ideas = []
+        
+        if macro_score > 65:
+            # Bullish macro - suggest growth/cyclical exposure
+            suggestion_universe = [
+                {"ticker": "XLG", "name": "SPDR S&P 500 Growth ETF", "sector": "Large-Cap Growth", "rationale": "Bullish macro backdrop favors growth equities with strong near-term catalysts.", "signal": "BUY"},
+                {"ticker": "ARKK", "name": "ARK Innovation ETF", "sector": "Growth/Technology", "rationale": "Favorable GDP growth and declining rates create tailwinds for innovation-driven companies.", "signal": "BUY"},
+                {"ticker": "VGT", "name": "Vanguard Information Technology ETF", "sector": "Technology", "rationale": "Tech sector benefits from bullish macro momentum and strong corporate earnings outlook.", "signal": "BUY"},
+                {"ticker": "XLF", "name": "Financial Select Sector SPDR ETF", "sector": "Financials", "rationale": "Rising rates and strong economic growth support financial sector profitability.", "signal": "BUY"},
+            ]
+        elif macro_score < 45:
+            # Bearish macro - suggest defensive exposure
+            suggestion_universe = [
+                {"ticker": "XLP", "name": "Consumer Staples Select Sector SPDR ETF", "sector": "Consumer Staples", "rationale": "Defensive positioning with non-cyclical demand holds up well during economic slowdown.", "signal": "BUY"},
+                {"ticker": "XLU", "name": "Utilities Select Sector SPDR ETF", "sector": "Utilities", "rationale": "Stable dividend yields and essential services provide downside protection.", "signal": "BUY"},
+                {"ticker": "XLV", "name": "Health Care Select Sector SPDR ETF", "sector": "Healthcare", "rationale": "Healthcare demand remains steady regardless of economic cycle; recession-resistant.", "signal": "BUY"},
+                {"ticker": "AGG", "name": "iShares Core US Aggregate Bond ETF", "sector": "Fixed Income", "rationale": "Bond exposure may benefit from potential rate cuts ahead", "signal": "WATCH"},
+            ]
+        else:
+            # Neutral macro - suggest balanced exposure
+            suggestion_universe = [
+                {"ticker": "VTI", "name": "Vanguard Total Stock Market ETF", "sector": "Broad Market", "rationale": "Broad market exposure balances growth and stability in neutral macro environment.", "signal": "BUY"},
+                {"ticker": "XLV", "name": "Health Care Select Sector SPDR ETF", "sector": "Healthcare", "rationale": "Defensive characteristics with steady dividends suit mixed market backdrop.", "signal": "BUY"},
+                {"ticker": "XLE", "name": "Energy Select Sector SPDR ETF", "sector": "Energy", "rationale": "Energy sector offers valuation support with modest recovery potential.", "signal": "WATCH"},
+                {"ticker": "IWM", "name": "iShares Russell 2000 ETF", "sector": "Small-Cap", "rationale": "Small-cap exposure provides diversification and upside participation.", "signal": "WATCH"},
+            ]
+        
+        # Filter out current holdings and apply risk level
+        filtered = [x for x in suggestion_universe if x["ticker"] not in current_symbols]
+        
+        if risk_level == "LOW":
+            filtered = [x for x in filtered if x["signal"] == "BUY"]  # Only strongest ideas
+        
+        return filtered[:3]
+    
+    def _generate_fallback_sentiment_ideas(self, sentiment_tilt: str, bearish_pct: float, risk_level: str, current_symbols: List[str]) -> List[Dict[str, Any]]:
+        """Generate ideas counter-trending bearish sentiment (value play) or aligned with bullish sentiment"""
+        ideas = []
+        
+        if sentiment_tilt == "negative" and bearish_pct > 50:
+            # Market is very bearish - look for contrarian opportunity (value)
+            suggestion_universe = [
+                {"ticker": "VTV", "name": "Vanguard Value ETF", "sector": "Value", "rationale": "Bearish sentiment often creates value opportunities in quality undervalued names; potential mean reversion play.", "signal": "BUY"},
+                {"ticker": "TNA", "name": "Direxion Daily Small Cap Bull 3x ETF", "sector": "Small-Cap Value", "rationale": "Contrarian bet when sentiment is most negative; historically precedes strong reversals.", "signal": "WATCH"},
+                {"ticker": "SCHV", "name": "Schwab US Value ETF", "sector": "Value", "rationale": "Value stocks trading at depressed multiples amid bearish sentiment offer asymmetric upside.", "signal": "BUY"},
+                {"ticker": "BAC", "name": "Bank of America", "sector": "Financials", "rationale": "Quality financials oversold due to macro concerns; fundamental value support remains intact.", "signal": "WATCH"},
+            ]
+        elif sentiment_tilt == "positive":
+            # Market is bullish - ride momentum in quality names
+            suggestion_universe = [
+                {"ticker": "MSFT", "name": "Microsoft", "sector": "Technology", "rationale": "Dominant AI and cloud exposure; bullish sentiment driven by strong secular growth.", "signal": "BUY"},
+                {"ticker": "AAPL", "name": "Apple", "sector": "Technology", "rationale": "Quality mega-cap with positive momentum; benefits from bullish risk-on sentiment.", "signal": "BUY"},
+                {"ticker": "NVDA", "name": "NVIDIA", "sector": "Technology", "rationale": "AI chip leader; bullish sentiment justified by structural growth drivers.", "signal": "BUY"},
+                {"ticker": "QQQ", "name": "Invesco QQQ Trust", "sector": "Growth Tech", "rationale": "Tech-heavy index to capitalize on bullish momentum in growth equities.", "signal": "BUY"},
+            ]
+        else:
+            # Neutral sentiment - quality dividend/stable
+            suggestion_universe = [
+                {"ticker": "JNJ", "name": "Johnson & Johnson", "sector": "Healthcare", "rationale": "Dividend aristocrat with defensive characteristics suit neutral sentiment backdrop.", "signal": "BUY"},
+                {"ticker": "KO", "name": "The Coca-Cola Company", "sector": "Consumer Staples", "rationale": "Stable consumer staple with consistent dividends provides sentiment-neutral income.", "signal": "BUY"},
+                {"ticker": "PG", "name": "Procter & Gamble", "sector": "Consumer Staples", "rationale": "Essential products with pricing power; neutral sentiment environment doesn't threaten fundamentals.", "signal": "BUY"},
+                {"ticker": "SCHD", "name": "Schwab US Dividend Equity ETF", "sector": "Dividends", "rationale": "High-quality dividend ETF balances growth and income for mixed sentiment.", "signal": "BUY"},
+            ]
+        
+        filtered = [x for x in suggestion_universe if x["ticker"] not in current_symbols]
+        
+        if risk_level == "LOW":
+            filtered = [x for x in filtered if x["signal"] == "BUY"]
+        
+        return filtered[:3]
+    
+    def _generate_fallback_sector_ideas(self, favorable_sectors: List[Dict[str, Any]], risk_level: str, current_symbols: List[str]) -> List[Dict[str, Any]]:
+        """Generate ideas focused on favorable predicted sectors"""
+        ideas = []
+        
+        # Map sectors to popular stocks/ETFs with rationales
+        sector_mapping = {
+            "Consumer Staples": [
+                {"ticker": "XLP", "name": "Consumer Staples Select Sector SPDR ETF", "sector": "Consumer Staples", "rationale": "Predicted outperformer with strong momentum; exposure to defensive sector shows favorable outlook.", "signal": "BUY"},
+                {"ticker": "SPLG", "name": "SPDR Portfolio S&P 500 Consumer Staples ETF", "sector": "Consumer Staples", "rationale": "Consumer staples sector rotation thesis supports increased allocation to defensive names.", "signal": "BUY"},
+                {"ticker": "PEP", "name": "PepsiCo", "sector": "Consumer Staples", "rationale": "Quality staples stock with price-setting power aligns with favorable sector outlook.", "signal": "BUY"},
+            ],
+            "Healthcare": [
+                {"ticker": "XLV", "name": "Health Care Select Sector SPDR ETF", "sector": "Healthcare", "rationale": "Defensive healthcare sector offers steady growth independent of economic cycles.", "signal": "BUY"},
+                {"ticker": "VHT", "name": "Vanguard Health Care ETF", "sector": "Healthcare", "rationale": "Broad healthcare exposure with favorable long-term demographics and innovation trends.", "signal": "BUY"},
+                {"ticker": "JNJ", "name": "Johnson & Johnson", "sector": "Healthcare", "rationale": "Dividend aristocrat with diversified healthcare portfolio in growth sector.", "signal": "BUY"},
+            ],
+            "Technology": [
+                {"ticker": "XLK", "name": "Technology Select Sector SPDR ETF", "sector": "Technology", "rationale": "Tech sector offers growth exposure in bullish macro environment with AI tailwinds.", "signal": "BUY"},
+                {"ticker": "QQQ", "name": "Invesco QQQ Trust", "sector": "Technology", "rationale": "Nasdaq-weighted ETF provides concentrated exposure to outperforming tech/growth names.", "signal": "BUY"},
+                {"ticker": "MSFT", "name": "Microsoft", "sector": "Technology", "rationale": "Dominant position in AI and cloud; leading beneficiary of tech sector momentum.", "signal": "BUY"},
+            ],
+            "Energy": [
+                {"ticker": "XLE", "name": "Energy Select Sector SPDR ETF", "sector": "Energy", "rationale": "Energy sector mean reversion play; valuation support on stabilizing commodity backdrop.", "signal": "BUY"},
+                {"ticker": "CVX", "name": "Chevron Corporation", "sector": "Energy", "rationale": "Quality energy producer with strong dividend; positioned well for cyclical recovery.", "signal": "WATCH"},
+                {"ticker": "MPC", "name": "Marathon Petroleum", "sector": "Energy", "rationale": "Midstream/downstream exposure offers diversified energy sector participation.", "signal": "WATCH"},
+            ],
+            "Financials": [
+                {"ticker": "XLF", "name": "Financial Select Sector SPDR ETF", "sector": "Financials", "rationale": "Financial sector benefits from rising/stable rates and improving credit conditions.", "signal": "BUY"},
+                {"ticker": "JPM", "name": "JPMorgan Chase", "sector": "Financials", "rationale": "Strongest financial institution; leadership quality aligns with favorable macro backdrop.", "signal": "BUY"},
+                {"ticker": "BAC", "name": "Bank of America", "sector": "Financials", "rationale": "Systemically important bank with attractive valuation in stable rate environment.", "signal": "WATCH"},
+            ],
+            "Industrials": [
+                {"ticker": "XLI", "name": "Industrial Select Sector SPDR ETF", "sector": "Industrials", "rationale": "Industrial sector momentum and mean reversion dynamics support favorable outlook.", "signal": "BUY"},
+                {"ticker": "BA", "name": "Boeing", "sector": "Industrials", "rationale": "Aerospace leader positioned for recovery in strong macro environment", "signal": "WATCH"},
+                {"ticker": "CAT", "name": "Caterpillar", "sector": "Industrials", "rationale": "Equipment manufacturer benefits from infrastructure spending and global growth.", "signal": "BUY"},
+            ],
+        }
+        
+        for fav_sector in favorable_sectors[:2]:  # Top 2 favorable sectors
+            sector_name = fav_sector.get("sector")
+            if sector_name in sector_mapping:
+                sector_options = sector_mapping[sector_name]
+                filtered = [x for x in sector_options if x["ticker"] not in current_symbols]
+                if filtered:
+                    ideas.append(filtered[0])
+        
+        if risk_level == "LOW":
+            ideas = [x for x in ideas if x["signal"] == "BUY"]
+        
+        return ideas[:3]
